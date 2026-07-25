@@ -63,6 +63,17 @@ One-time setup (about 5 minutes):
 5. Under **Authorized JavaScript origins**, add the origin where you host the app (e.g. `https://your-site.netlify.app`).
 6. Copy the **Client ID** (ends in `.apps.googleusercontent.com`), paste it into the Google box in the Sync panel, then **Connect Google**.
 
+**You never need a client secret.** This is a browser-only app, so every file it serves is public — a secret pasted here would be published, not protected. Google's sign-in flow used here (Identity Services token flow with PKCE) is built for exactly this case and needs only the Client ID. If the console offers you a secret, skip it.
+
+#### Choosing which calendar to sync
+
+The Sync panel has a **calendar** box under the Google status line. It accepts either:
+
+- `primary` — the signed-in person's own Google calendar.
+- A **shared calendar ID**, which looks like a long string ending in `@group.calendar.google.com`. Find it in Google Calendar → hover the calendar → **⋮** → **Settings and sharing** → **Integrate calendar** → **Calendar ID**.
+
+The app ships pointed at the shared family calendar, so everyone who connects lands on the same events. For write-back to work, each person needs **"Make changes to events"** permission on that calendar — share it with them from the same **Settings and sharing** screen.
+
 Note on Google sessions: browsers don't get long-lived Google refresh tokens, so after about an hour you may need to hit **Connect**/**Refresh** again. Outlook (via MSAL) can refresh more quietly within a session.
 
 ### Outlook live sync — built in, two-way, no backend needed
