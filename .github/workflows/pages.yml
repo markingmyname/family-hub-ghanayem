@@ -1,0 +1,44 @@
+name: Deploy Family Hub to GitHub Pages
+
+# Publishes gfh-v1/family-hub-app/ straight from source — no duplicate copy of
+# index.html to keep in sync. Requires Settings → Pages → Source: "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'gfh-v1/family-hub-app/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deploy finish rather than cancelling it mid-publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload the app folder as the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: gfh-v1/family-hub-app
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
