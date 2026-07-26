@@ -1863,6 +1863,15 @@ function renderGoogleBlock(){
     <p style="font-size:11.5px; color:var(--ink-soft); margin:-4px 0 10px;">
       Use <code>primary</code> for your own calendar, or paste a shared calendar's ID (Google Calendar → calendar settings → <em>Integrate calendar</em> → <strong>Calendar ID</strong>). You need edit access to that calendar for write-back to work.
     </p>
+    <div style="background:rgba(0,0,0,0.04); border-radius:8px; padding:8px 10px; margin:0 0 10px;">
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:0 0 4px;">
+        This page's origin — paste it into Google Cloud Console → Credentials → your OAuth client → <strong>Authorized JavaScript origins</strong>:
+      </p>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <code id="googleOrigin" style="font-size:12.5px; user-select:all;">${escapeHtml(location.origin)}</code>
+        <button class="btn btn-ghost" id="copyOrigin" style="font-size:11.5px; padding:2px 8px;">Copy</button>
+      </div>
+    </div>
     <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
       ${connected
         ? `<button class="btn btn-primary" id="googlePull">🔄 Refresh from Google</button>
@@ -1873,6 +1882,12 @@ function renderGoogleBlock(){
     <div id="googleStatus" style="font-size:12.5px; margin-top:8px; min-height:16px;"></div>`;
 
   const setStatus = (msg, ok)=>{ const el=document.getElementById('googleStatus'); if(el){ el.style.color = ok===false?'var(--danger)':(ok?'var(--good)':'var(--ink-soft)'); el.textContent=msg; } };
+
+  const copyBtn = document.getElementById('copyOrigin');
+  if(copyBtn) copyBtn.onclick = async ()=>{
+    try{ await navigator.clipboard.writeText(location.origin); setStatus('Origin copied. Add it in Google Cloud Console, then wait a minute and retry.', true); }
+    catch(e){ setStatus('Copy failed — select the text above manually.', false); }
+  };
 
   const saveCal = document.getElementById('saveGoogleCal');
   if(saveCal) saveCal.onclick = ()=>{
