@@ -1421,6 +1421,7 @@ function outlookCount(){ return state.events.filter(e=>e.source==='outlook').len
    Access tokens last ~1 hour. We cache the token in sessionStorage so a page
    refresh doesn't drop the connection, and silently re-auth before expiry. */
 const GOOGLE_SESSION_KEY = 'fh-google-session';
+const GOOGLE_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
 const GOOGLE_POLL_MS = 5 * 60 * 1000;   // background pull cadence
 const GOOGLE_RENEW_SKEW_MS = 5 * 60 * 1000; // renew this long before expiry
 
@@ -1483,9 +1484,20 @@ const googleSync = {
     if(this.tokenClient) return this.tokenClient;
     this.tokenClient = google.accounts.oauth2.initTokenClient({
       client_id: this._clientId(),
-      scope: 'https://www.googleapis.com/auth/calendar.events',
+      scope: GOOGLE_SCOPE,
       callback: (resp)=>{
         if(resp && resp.access_token){
+          /* Granular permissions let someone approve sign-in but decline the
+             calendar checkbox. Google still returns a token, so verify the scope
+             was actually granted rather than failing later with a vague 403.
+             (Google OAuth 2.0 docs, "Check which scopes users granted".) */
+          const granted = String(resp.scope||'').split(' ');
+          if(!granted.includes(GOOGLE_SCOPE)){
+            this._pending && this._pending.reject(new Error(
+              'Calendar permission was not granted — reconnect and leave the calendar checkbox ticked.'));
+            this._pending = null;
+            return;
+          }
           this.accessToken = resp.access_token;
           this.expiresAt = Date.now() + (Number(resp.expires_in || 3600) * 1000);
           if(state.google) state.google.consented = true;
@@ -1617,7 +1629,7 @@ function googleAuthMessage(code){
   const c = String(code||'');
   if(c.includes('popup_failed_to_open')) return 'The sign-in popup was blocked — allow popups for this site, then try again.';
   if(c.includes('popup_closed')) return 'Sign-in window was closed before finishing.';
-  if(c.includes('access_denied')) return 'Access denied — if the app is in Testing, add your Google account as a Test user.';
+  if(c.includes('access_denied')) return 'Access denied — publish the app in Google Cloud Console (Auth Platform → Audience → Publish), or add this account as a Test user.';
   if(c.includes('invalid_client')) return 'Google rejected the Client ID — check it matches the OAuth client for this origin.';
   if(c.includes('idpiframe') || c.includes('origin')) return 'This page\'s address is not an Authorized JavaScript origin: '+location.origin;
   return c ? ('Google sign-in failed: '+c) : 'Google sign-in was cancelled or failed.';
