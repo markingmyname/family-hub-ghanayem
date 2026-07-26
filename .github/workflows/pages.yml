@@ -1,13 +1,13 @@
 name: Deploy Family Hub to GitHub Pages
 
-# Publishes gfh-v1/family-hub-app/ straight from source — no duplicate copy of
+# Publishes family-hub-app/ straight from source — no duplicate copy of
 # index.html to keep in sync. Requires Settings → Pages → Source: "GitHub Actions".
 
 on:
   push:
     branches: [main]
     paths:
-      - 'gfh-v1/family-hub-app/**'
+      - 'family-hub-app/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -37,7 +37,7 @@ jobs:
       - name: Upload the app folder as the site
         uses: actions/upload-pages-artifact@v3
         with:
-          path: gfh-v1/family-hub-app
+          path: family-hub-app
 
       - name: Deploy to GitHub Pages
         id: deployment
