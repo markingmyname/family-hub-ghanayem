@@ -1888,7 +1888,7 @@ function renderGoogleBlock(){
   let statusLabel, statusNote;
   if(connected){ statusLabel = '🟢 Connected (two-way)'; statusNote = 'Events sync both directions.'; }
   else if(readOnly){ statusLabel = '🔵 Read-only'; statusNote = 'Google events appear here. Add events in Google Calendar.'; }
-  else { statusLabel = '⚪ Not connected'; statusNote = ''; }
+  else { statusLabel = '⚪ Not connected'; statusNote = 'Nothing set up yet — use <strong>one</strong> of the two options below. Read-only is the quicker one.'; }
 
   block.innerHTML = `
     <p style="font-size:12.5px; color:var(--ink-soft); margin:4px 0 8px;">
@@ -1907,9 +1907,12 @@ function renderGoogleBlock(){
     </p>
 
     <div style="border:1px solid var(--line, rgba(0,0,0,0.12)); border-radius:10px; padding:10px 12px; margin:0 0 12px;">
-      <p style="font-size:12.5px; margin:0 0 4px;"><strong>Read-only (no sign-in)</strong></p>
+      <p style="font-size:12.5px; margin:0 0 4px;"><strong>Read-only (no sign-in)</strong> ${apiKey?'':'&nbsp;<span style="font-size:11px; background:var(--mustard,#E8B93B); color:#2E3A46; border-radius:10px; padding:1px 7px;">start here</span>'}</p>
       <p style="font-size:11.5px; color:var(--ink-soft); margin:0 0 8px; line-height:1.5;">
         Simplest option. Make the calendar public, paste a Google API key, and events flow in — no OAuth consent screen, no app verification. The hub can't write back to Google in this mode.
+      </p>
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:0 0 8px; line-height:1.5;">
+        Get a key at <code>console.cloud.google.com/apis/credentials</code> → <strong>Create credentials</strong> → <strong>API key</strong>, then restrict it to the Calendar API and this site.
       </p>
       <div class="add-row" style="margin:0;">
         <input id="googleApiKey" value="${escapeHtml(apiKey)}" placeholder="Google API key (AIza…)">
