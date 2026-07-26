@@ -352,7 +352,7 @@ function defaultState(){
     budget: { transactions: [] },
     meals: { plan:{}, recipes:[], pantry:[], grocery:[] },
     outlook: { clientId: '' },
-    google: { clientId: '640349356853-ljl8ljpfpktegj49f9f4kr1kkb6fngv2.apps.googleusercontent.com', calendarId: 'ac3601938b78b11f2849f0a53d25e7047d4c115a510dd7d02464bc8a72b60a85@group.calendar.google.com', consented: false },
+    google: { clientId: '640349356853-ljl8ljpfpktegj49f9f4kr1kkb6fngv2.apps.googleusercontent.com', calendarId: 'ac3601938b78b11f2849f0a53d25e7047d4c115a510dd7d02464bc8a72b60a85@group.calendar.google.com', apiKey: '', consented: false },
     pin: '1234',
     calView: 'month',
     calDate: todayStr(),
@@ -374,6 +374,7 @@ function migrateState(s){
   if(!s.google) s.google = { clientId: '' };
   if(!s.google.calendarId) s.google.calendarId = 'ac3601938b78b11f2849f0a53d25e7047d4c115a510dd7d02464bc8a72b60a85@group.calendar.google.com';
   if(s.google.consented === undefined) s.google.consented = false;
+  if(s.google.apiKey === undefined) s.google.apiKey = '';
   (s.people||[]).forEach(p=>{
     if(!p.avatarType) p.avatarType = 'color';
     if(p.avatarEmoji===undefined) p.avatarEmoji='';
@@ -1474,6 +1475,13 @@ const googleSync = {
   isReady(){ return !!(window.google && google.accounts && google.accounts.oauth2); },
 
   _clientId(){ return state.google && state.google.clientId; },
+  /* An API key reads a PUBLIC calendar with no OAuth at all. Google's
+     events.list reference marks authorization optional, so this needs no
+     consent screen, no verification, and no publishing status. Read-only. */
+  _apiKey(){ return (state.google && state.google.apiKey) || ''; },
+  hasReadKey(){ return !!this._apiKey(); },
+  canRead(){ return this.isConnected() || this.hasReadKey(); },
+  canWrite(){ return this.isConnected(); },
   /* Which Google calendar to read/write. Defaults to the shared family calendar;
      'primary' means the signed-in account's own calendar. */
   _rawCalId(){ return (state.google && state.google.calendarId) || 'primary'; },
@@ -1556,14 +1564,27 @@ const googleSync = {
     stopGoogleAutoSync();
   },
   async _api(path, opts={}){
-    if(!this.accessToken) throw new Error('Not connected to Google.');
-    const res = await fetch('https://www.googleapis.com/calendar/v3'+path, {
-      ...opts,
-      headers: { Authorization:'Bearer '+this.accessToken, 'Content-Type':'application/json', ...(opts.headers||{}) }
-    });
+    const useOAuth = this.isConnected();
+    const key = this._apiKey();
+    if(!useOAuth && !key) throw new Error('Not connected to Google.');
+
+    let url = 'https://www.googleapis.com/calendar/v3'+path;
+    const headers = { 'Content-Type':'application/json', ...(opts.headers||{}) };
+    if(useOAuth) headers.Authorization = 'Bearer '+this.accessToken;
+    else url += (url.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(key);
+
+    const res = await fetch(url, { ...opts, headers });
     if(res.status===401){ this.accessToken=null; this.expiresAt=0; this._clearSession(); throw new Error('Google session expired — connect again.'); }
-    if(res.status===403) throw new Error('Google denied access (403) — check you have edit rights on this calendar.');
-    if(res.status===404) throw new Error('Calendar not found (404) — check the Calendar ID is correct and shared with you.');
+    if(res.status===403){
+      throw new Error(useOAuth
+        ? 'Google denied access (403) — check you have edit rights on this calendar.'
+        : 'Google denied the API key (403) — make the calendar public, and check the key\'s API and referrer restrictions.');
+    }
+    if(res.status===404){
+      throw new Error(useOAuth
+        ? 'Calendar not found (404) — check the Calendar ID is correct and shared with you.'
+        : 'Calendar not found (404) — in read-only mode the calendar must be set to public, and "primary" will never work.');
+    }
     if(!res.ok) throw new Error('Google Calendar '+res.status+': '+(await res.text()).slice(0,150));
     if(res.status===204) return null;
     return res.json();
@@ -1577,7 +1598,11 @@ const googleSync = {
     return { date: fmtDate(d), time: String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0') };
   },
   async pull(personId){
-    await this.ensureToken();
+    /* Prefer OAuth when it's available; fall back to the read-only API key. */
+    if(!this.isConnected()){
+      if(this.hasReadKey()){ /* API key path — no token needed */ }
+      else await this.ensureToken();
+    }
     const timeMin = new Date(); timeMin.setDate(timeMin.getDate()-30);
     const timeMax = new Date(); timeMax.setDate(timeMax.getDate()+180);
     const q = `/calendars/${this._calId()}/events?timeMin=${timeMin.toISOString()}&timeMax=${timeMax.toISOString()}&singleEvents=true&orderBy=startTime&maxResults=250`;
@@ -1619,9 +1644,12 @@ const googleSync = {
     const endH = String((h+1)%24).padStart(2,'0');
     return { summary:e.title, start:{dateTime:e.date+'T'+e.time+':00', timeZone:this.tz}, end:{dateTime:e.date+'T'+endH+':'+String(m).padStart(2,'0')+':00', timeZone:this.tz} };
   },
-  async push(e){ await this.ensureToken(); const r = await this._api('/calendars/'+this._calId()+'/events',{method:'POST', body:JSON.stringify(this._toBody(e))}); return r.id; },
-  async update(e){ if(!e.googleId) return; await this.ensureToken(); await this._api('/calendars/'+this._calId()+'/events/'+encodeURIComponent(e.googleId),{method:'PATCH', body:JSON.stringify(this._toBody(e))}); },
-  async remove(e){ if(!e.googleId) return; await this.ensureToken(); await this._api('/calendars/'+this._calId()+'/events/'+encodeURIComponent(e.googleId),{method:'DELETE'}); }
+  _requireWrite(){
+    if(!this.canWrite()) throw new Error('Read-only mode — connect with Google sign-in to write events back.');
+  },
+  async push(e){ this._requireWrite(); await this.ensureToken(); const r = await this._api('/calendars/'+this._calId()+'/events',{method:'POST', body:JSON.stringify(this._toBody(e))}); return r.id; },
+  async update(e){ if(!e.googleId) return; this._requireWrite(); await this.ensureToken(); await this._api('/calendars/'+this._calId()+'/events/'+encodeURIComponent(e.googleId),{method:'PATCH', body:JSON.stringify(this._toBody(e))}); },
+  async remove(e){ if(!e.googleId) return; this._requireWrite(); await this.ensureToken(); await this._api('/calendars/'+this._calId()+'/events/'+encodeURIComponent(e.googleId),{method:'DELETE'}); }
 };
 
 /* Turns Google's terse error codes into something a person can act on. */
@@ -1643,7 +1671,7 @@ function googleSyncPersonId(){
   return state.people[0] && state.people[0].id;
 }
 async function googleAutoPull(){
-  if(!googleSync.isConnected() && !(state.google && state.google.consented)) return;
+  if(!googleSync.canRead() && !(state.google && state.google.consented)) return;
   try{
     const res = await googleSync.pull(googleSyncPersonId());
     if(res.added || res.updated || res.removed){ await saveState(); render(); }
@@ -1656,15 +1684,26 @@ function startGoogleAutoSync(){
   document.addEventListener('visibilitychange', googleVisibilityPull);
 }
 function stopGoogleAutoSync(){
+  if(googleSync.hasReadKey()) return; // read-only sync keeps running after sign-out
   if(googleAutoTimer){ clearInterval(googleAutoTimer); googleAutoTimer = null; }
   document.removeEventListener('visibilitychange', googleVisibilityPull);
 }
 function googleVisibilityPull(){ if(document.visibilityState==='visible') googleAutoPull(); }
 
-/* On startup: reuse a cached token, or silently re-authorize if already consented. */
+/* On startup: use the read-only key if present, otherwise reuse a cached token
+   or silently re-authorize if already consented. */
 async function initGoogleSync(){
-  if(!(state.google && state.google.clientId)) return;
   if(location.protocol === 'file:') return;
+
+  /* Read-only API key needs no sign-in at all — start immediately. */
+  if(googleSync.hasReadKey()){
+    startGoogleAutoSync();
+    googleAutoPull();
+    renderGoogleBlock();
+    if(!(state.google && state.google.clientId)) return;
+  }
+
+  if(!(state.google && state.google.clientId)) return;
   if(googleSync._restoreSession()){ startGoogleAutoSync(); googleAutoPull(); renderGoogleBlock(); return; }
   if(!state.google.consented) return;
   try{
@@ -1677,8 +1716,8 @@ async function initGoogleSync(){
 }
 
 function googleCount(){ return state.events.filter(e=>e.source==='google').length; }
-function anyCalendarConnected(){ return outlookSync.isConnected() || googleSync.isConnected(); }
-function anyCalendarConfigured(){ return !!((state.outlook&&state.outlook.clientId) || (state.google&&state.google.clientId)); }
+function anyCalendarConnected(){ return outlookSync.isConnected() || googleSync.canRead(); }
+function anyCalendarConfigured(){ return !!((state.outlook&&state.outlook.clientId) || (state.google&&state.google.clientId) || (state.google&&state.google.apiKey)); }
 
 const SYNC_GUIDES = {
   Google: `In Google Calendar (on a computer): Settings → click your calendar under "Settings for my calendars" → "Import &amp; export" → <strong>Export</strong> to download a .zip, unzip it to get the .ics file. To send events the other way, use that same Import screen with the file you export below.`,
@@ -1839,32 +1878,23 @@ function renderGoogleBlock(){
   const block = document.getElementById('googleBlock');
   if(!block) return;
   const clientId = (state.google && state.google.clientId) || '';
+  const apiKey = (state.google && state.google.apiKey) || '';
   const connected = googleSync.isConnected();
-
-  if(!clientId){
-    block.innerHTML = `
-      <p style="font-size:12.5px; color:var(--ink-soft); line-height:1.5; margin:4px 0 8px;">
-        One-time setup: create a Google Cloud OAuth Client ID (type <em>Web application</em>), add this page's URL as an authorized origin, then paste the Client ID here. Steps in the README.
-      </p>
-      <div class="add-row">
-        <input id="googleClientId" placeholder="Google OAuth Client ID (…apps.googleusercontent.com)">
-        <button class="btn btn-primary" id="saveGoogleId">Save</button>
-      </div>`;
-    document.getElementById('saveGoogleId').onclick = ()=>{
-      const v = document.getElementById('googleClientId').value.trim();
-      if(!v) return;
-      state.google.clientId = v; saveState(); renderGoogleBlock();
-    };
-    return;
-  }
+  const readOnly = !connected && googleSync.hasReadKey();
 
   const calId = (state.google && state.google.calendarId) || 'primary';
   const calLabel = calId === 'primary' ? 'Your own Google calendar' : 'Shared family calendar';
 
+  let statusLabel, statusNote;
+  if(connected){ statusLabel = '🟢 Connected (two-way)'; statusNote = 'Events sync both directions.'; }
+  else if(readOnly){ statusLabel = '🔵 Read-only'; statusNote = 'Google events appear here. Add events in Google Calendar.'; }
+  else { statusLabel = '⚪ Not connected'; statusNote = ''; }
+
   block.innerHTML = `
     <p style="font-size:12.5px; color:var(--ink-soft); margin:4px 0 8px;">
-      Status: <strong>${connected ? '🟢 Connected' : '⚪ Not connected'}</strong>${googleCount()?` · ${googleCount()} Google event${googleCount()===1?'':'s'} pulled in`:''}${connected && googleAutoTimer ? ' · 🔁 live sync every 5 min' : ''}
+      Status: <strong>${statusLabel}</strong>${googleCount()?` · ${googleCount()} Google event${googleCount()===1?'':'s'} pulled in`:''}${googleAutoTimer ? ' · 🔁 live sync every 5 min' : ''}
     </p>
+    ${statusNote?`<p style="font-size:11.5px; color:var(--ink-soft); margin:-4px 0 8px;">${statusNote}</p>`:''}
     <p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 6px;">
       Syncing with: <strong>${escapeHtml(calLabel)}</strong>
     </p>
@@ -1872,24 +1902,52 @@ function renderGoogleBlock(){
       <input id="googleCalId" value="${escapeHtml(calId)}" placeholder="primary — or a shared calendar ID">
       <button class="btn btn-ghost" id="saveGoogleCal">Set calendar</button>
     </div>
-    <p style="font-size:11.5px; color:var(--ink-soft); margin:-4px 0 10px;">
-      Use <code>primary</code> for your own calendar, or paste a shared calendar's ID (Google Calendar → calendar settings → <em>Integrate calendar</em> → <strong>Calendar ID</strong>). You need edit access to that calendar for write-back to work.
+    <p style="font-size:11.5px; color:var(--ink-soft); margin:-4px 0 12px;">
+      Use <code>primary</code> for your own calendar, or paste a shared calendar's ID (Google Calendar → calendar settings → <em>Integrate calendar</em> → <strong>Calendar ID</strong>).
     </p>
-    <div style="background:rgba(0,0,0,0.04); border-radius:8px; padding:8px 10px; margin:0 0 10px;">
-      <p style="font-size:11.5px; color:var(--ink-soft); margin:0 0 4px;">
-        This page's origin — paste it into Google Cloud Console → Credentials → your OAuth client → <strong>Authorized JavaScript origins</strong>:
+
+    <div style="border:1px solid var(--line, rgba(0,0,0,0.12)); border-radius:10px; padding:10px 12px; margin:0 0 12px;">
+      <p style="font-size:12.5px; margin:0 0 4px;"><strong>Read-only (no sign-in)</strong></p>
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:0 0 8px; line-height:1.5;">
+        Simplest option. Make the calendar public, paste a Google API key, and events flow in — no OAuth consent screen, no app verification. The hub can't write back to Google in this mode.
       </p>
-      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-        <code id="googleOrigin" style="font-size:12.5px; user-select:all;">${escapeHtml(location.origin)}</code>
-        <button class="btn btn-ghost" id="copyOrigin" style="font-size:11.5px; padding:2px 8px;">Copy</button>
+      <div class="add-row" style="margin:0;">
+        <input id="googleApiKey" value="${escapeHtml(apiKey)}" placeholder="Google API key (AIza…)">
+        <button class="btn ${apiKey?'btn-ghost':'btn-primary'}" id="saveGoogleKey">${apiKey?'Update key':'Save key'}</button>
       </div>
+      ${apiKey?`<button class="btn btn-ghost" id="clearGoogleKey" style="font-size:11.5px; margin-top:8px; padding:2px 8px;">Remove key</button>`:''}
     </div>
+
+    <div style="border:1px solid var(--line, rgba(0,0,0,0.12)); border-radius:10px; padding:10px 12px; margin:0 0 12px;">
+      <p style="font-size:12.5px; margin:0 0 4px;"><strong>Two-way sync (Google sign-in)</strong></p>
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:0 0 8px; line-height:1.5;">
+        Lets the hub add and edit events in Google. Needs an OAuth Client ID and a published consent screen.
+      </p>
+      ${clientId ? `
+      <div style="background:rgba(0,0,0,0.04); border-radius:8px; padding:8px 10px; margin:0 0 10px;">
+        <p style="font-size:11.5px; color:var(--ink-soft); margin:0 0 4px;">
+          This page's origin — must be an <strong>Authorized JavaScript origin</strong> on your OAuth client:
+        </p>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <code id="googleOrigin" style="font-size:12.5px; user-select:all;">${escapeHtml(location.origin)}</code>
+          <button class="btn btn-ghost" id="copyOrigin" style="font-size:11.5px; padding:2px 8px;">Copy</button>
+        </div>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        ${connected
+          ? `<button class="btn btn-ghost" id="googleDisconnect">Sign out</button>`
+          : `<button class="btn btn-primary" id="googleConnect">Connect Google</button>`}
+        <button class="btn btn-ghost" id="googleForget" style="font-size:12px;">Change Client ID</button>
+      </div>`
+      : `
+      <div class="add-row" style="margin:0;">
+        <input id="googleClientId" placeholder="OAuth Client ID (…apps.googleusercontent.com)">
+        <button class="btn btn-ghost" id="saveGoogleId">Save</button>
+      </div>`}
+    </div>
+
     <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-      ${connected
-        ? `<button class="btn btn-primary" id="googlePull">🔄 Refresh from Google</button>
-           <button class="btn btn-ghost" id="googleDisconnect">Disconnect</button>`
-        : `<button class="btn btn-primary" id="googleConnect">Connect Google</button>`}
-      <button class="btn btn-ghost" id="googleForget" style="font-size:12px;">Change Client ID</button>
+      ${googleSync.canRead() ? `<button class="btn btn-primary" id="googlePull">🔄 Refresh from Google</button>` : ''}
     </div>
     <div id="googleStatus" style="font-size:12.5px; margin-top:8px; min-height:16px;"></div>`;
 
@@ -1899,6 +1957,41 @@ function renderGoogleBlock(){
   if(copyBtn) copyBtn.onclick = async ()=>{
     try{ await navigator.clipboard.writeText(location.origin); setStatus('Origin copied. Add it in Google Cloud Console, then wait a minute and retry.', true); }
     catch(e){ setStatus('Copy failed — select the text above manually.', false); }
+  };
+
+  const saveKey = document.getElementById('saveGoogleKey');
+  if(saveKey) saveKey.onclick = async ()=>{
+    const v = document.getElementById('googleApiKey').value.trim();
+    state.google.apiKey = v;
+    await saveState();
+    if(!v){ renderGoogleBlock(); return; }
+    setStatus('Key saved — testing it…');
+    try{
+      const res = await googleSync.pull(googleSyncPersonId());
+      await saveState();
+      startGoogleAutoSync();
+      renderGoogleBlock();
+      setStatus(`Working. Pulled ${res.added} event${res.added===1?'':'s'} in. Live sync is on. ✅`, true);
+      render();
+    }catch(err){
+      renderGoogleBlock();
+      setStatus((err&&err.message)||'The API key did not work.', false);
+    }
+  };
+
+  const clearKey = document.getElementById('clearGoogleKey');
+  if(clearKey) clearKey.onclick = ()=>requireUnlock(async ()=>{
+    state.google.apiKey = '';
+    await saveState();
+    stopGoogleAutoSync();
+    renderGoogleBlock();
+  });
+
+  const saveId = document.getElementById('saveGoogleId');
+  if(saveId) saveId.onclick = ()=>{
+    const v = document.getElementById('googleClientId').value.trim();
+    if(!v) return;
+    state.google.clientId = v; saveState(); renderGoogleBlock();
   };
 
   const saveCal = document.getElementById('saveGoogleCal');
