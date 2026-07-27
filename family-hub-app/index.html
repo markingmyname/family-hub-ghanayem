@@ -144,6 +144,17 @@
   .tz-now{font-family:'JetBrains Mono'; font-size:13px;}
   .tz-sep{color:var(--ink-soft);}
   .tz-hint{margin-left:auto; color:var(--ink-soft); font-size:11.5px;}
+
+  /* Event people picker */
+  .who-picker{display:flex; flex-wrap:wrap; gap:6px;}
+  .who-opt{
+    display:flex; align-items:center; gap:6px; cursor:pointer; margin:0;
+    border:1.5px solid var(--line); border-radius:999px; padding:5px 12px 5px 8px;
+    font-size:13px; font-weight:600; color:var(--ink); background:#fff;
+  }
+  .who-opt input{width:16px; height:16px; margin:0; cursor:pointer;}
+  .who-opt:has(input:checked){border-color:var(--board); background:var(--paper-2);}
+  .who-family{flex-basis:100%;}
   .cal-toolbar{display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; flex-wrap:wrap; gap:10px;}
   .cal-nav{display:flex; align-items:center; gap:8px;}
   .view-toggle{display:flex; background:var(--paper-2); border-radius:10px; padding:3px; border:1px solid var(--line);}
@@ -750,6 +761,11 @@ function migrateState(s){
   if(s.timeZones.primaryLabel === undefined) s.timeZones.primaryLabel = '';
   if(s.timeZones.secondaryLabel === undefined) s.timeZones.secondaryLabel = '';
   if(typeof s.sleepAfterMin !== 'number' || ![5,10,15,30,60,0].includes(s.sleepAfterMin)) s.sleepAfterMin = 15;
+  /* Events moved from a single personId to a personIds list. An empty list means
+     the event belongs to the whole family (the catch-all calendar). */
+  (s.events||[]).forEach(e=>{
+    if(!Array.isArray(e.personIds)) e.personIds = e.personId ? [e.personId] : [];
+  });
   return s;
 }
 
@@ -800,6 +816,40 @@ function personById(id){ return state.people.find(p=>p.id===id); }
 function pointsFor(id){ return state.points[id] || 0; }
 function addPoints(id, n){ state.points[id] = pointsFor(id) + n; }
 function budgetFor(id){ return state.budget.transactions.filter(t=>t.personId===id).reduce((sum,t)=>sum+t.amount,0); }
+
+/* ---- Event ownership ----
+   An event carries a list of people. An EMPTY list means it belongs to the whole
+   family — the catch-all calendar — so it shows up no matter who you filter to. */
+function eventPersonIds(e){
+  const ids = Array.isArray(e.personIds) ? e.personIds : (e.personId ? [e.personId] : []);
+  return ids.filter(id=>personById(id));
+}
+function isFamilyEvent(e){ return eventPersonIds(e).length === 0; }
+function eventPeople(e){ return eventPersonIds(e).map(personById).filter(Boolean); }
+function familyLabel(){ return state.familyLabel || 'Family calendar'; }
+function eventMatchesFilter(e, filter){
+  if(filter === 'all') return true;
+  return isFamilyEvent(e) || eventPersonIds(e).includes(filter);
+}
+/* One person keeps their own colour; several share the chip as equal bands;
+   a family event uses the neutral board colour so it reads as "everyone". */
+function eventColor(e){
+  const ppl = eventPeople(e);
+  if(!ppl.length) return 'var(--board)';
+  if(ppl.length === 1) return ppl[0].color;
+  const step = 100 / ppl.length;
+  const stops = ppl.map((p,i)=>`${p.color} ${(i*step).toFixed(2)}% ${((i+1)*step).toFixed(2)}%`).join(', ');
+  return `linear-gradient(90deg, ${stops})`;
+}
+function eventTextColor(e){
+  const ppl = eventPeople(e);
+  if(ppl.length === 1) return ppl[0].text || '#fff';
+  return '#fff';
+}
+function eventPeopleLabel(e){
+  const ppl = eventPeople(e);
+  return ppl.length ? ppl.map(p=>p.name).join(', ') : familyLabel();
+}
 
 /* ---- Avatar rendering ---- */
 function avatarHtml(p, size){
@@ -959,8 +1009,7 @@ function renderUpNext(){
   const todays = state.events.filter(e=>e.date===today).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
   const el = document.getElementById('ssUpNext');
   el.innerHTML = todays.slice(0,5).map(e=>{
-    const p = personById(e.personId);
-    return `<div class="ev-pill" style="background:${p?p.color:'#888'}; color:${p?p.text||'#fff':'#fff'};">${p?p.name+': ':''}${escapeHtml(e.title)}${e.time? ' · '+fmtEventTime(e):''}</div>`;
+    return `<div class="ev-pill" style="background:${eventColor(e)}; color:${eventTextColor(e)};">${escapeHtml(eventPeopleLabel(e))}: ${escapeHtml(e.title)}${e.time? ' · '+fmtEventTime(e):''}</div>`;
   }).join('') || '<div style="opacity:0.6;font-size:13px;">Nothing else on today\'s calendar 🎉</div>';
 }
 document.getElementById('screensaver').addEventListener('click', exitScreensaver);
@@ -1119,7 +1168,7 @@ function renderCalendar(){
 function startOfWeek(d){ const r=new Date(d); r.setDate(r.getDate()-r.getDay()); return r; }
 function visibleEvents(dateStr){
   const evs = state.events.filter(e=>e.date===dateStr);
-  return state.calFilter==='all' ? evs : evs.filter(e=>e.personId===state.calFilter);
+  return state.calFilter==='all' ? evs : evs.filter(e=>eventMatchesFilter(e, state.calFilter));
 }
 
 function renderMonthGrid(d){
@@ -1178,14 +1227,13 @@ window.addEventListener('resize', ()=>{
   }, 200);
 });
 function monthChipHtml(e){
-  const p = personById(e.personId);
-  const color = p ? p.color : '#8a8a8a';
-  const text = p && p.text ? p.text : '#fff';
+  const color = eventColor(e);
+  const text = eventTextColor(e);
   const label = escapeHtml(e.title);
   /* The cells are too narrow for badges, so who/when/repeating all live in the
      hover tooltip — the chip itself stays as readable as Google's. */
   const tip = escapeHtml(
-    (e.time ? fmtEventTime(e, {withLabels:true})+' · ' : 'All day · ')+e.title+(p ? ' · '+p.name : '')+(e.seriesId ? ' · '+seriesLabel(e) : '')
+    (e.time ? fmtEventTime(e, {withLabels:true})+' · ' : 'All day · ')+e.title+' · '+eventPeopleLabel(e)+(e.seriesId ? ' · '+seriesLabel(e) : '')
   );
   if(!e.time){
     return `<div class="month-chip allday" style="background:${color}; color:${text};" data-editevent="${e.id}" title="${tip}">
@@ -1203,7 +1251,7 @@ function renderWeekGrid(d){
     const cur = new Date(start); cur.setDate(start.getDate()+i);
     const ds = fmtDate(cur);
     const dayEvents = visibleEvents(ds).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
-    const pills = dayEvents.map(e=>{ const p=personById(e.personId); return `<div class="ev-pill" style="background:${p?p.color:'#999'}; color:${p?p.text||'#fff':'#fff'};" data-editevent="${e.id}">${e.time?fmtEventTime(e)+' · ':''}${escapeHtml(e.title)}</div>`; }).join('');
+    const pills = dayEvents.map(e=>`<div class="ev-pill" style="background:${eventColor(e)}; color:${eventTextColor(e)};" data-editevent="${e.id}" title="${escapeHtml(eventPeopleLabel(e))}">${e.time?fmtEventTime(e)+' · ':''}${escapeHtml(e.title)}</div>`).join('');
     cols += `<div class="week-col" data-daycell="${ds}">
         <div class="week-col-head">${DOW[cur.getDay()]}<br><span class="mono" style="font-weight:400;">${cur.getDate()}</span></div>
         ${pills}
@@ -1213,16 +1261,28 @@ function renderWeekGrid(d){
 }
 function renderDayColumns(d){
   const ds = fmtDate(d);
+  const dayEvents = state.events.filter(e=>e.date===ds).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
   const people = state.calFilter==='all' ? state.people : state.people.filter(p=>p.id===state.calFilter);
+  const item = e=>`<div class="day-event" data-editevent="${e.id}">${e.time?`<span class="t">${fmtEventTime(e)}</span>`:''}${escapeHtml(e.title)}</div>`;
+  const emptyNote = `<div style="font-size:12px;color:var(--ink-soft);">No events</div>`;
+
+  /* Whole-family events get their own column instead of being repeated down
+     every person's list — the same idea as the catch-all filter chip. */
+  const familyEvents = dayEvents.filter(isFamilyEvent);
+  const familyCol = familyEvents.length ? `<div class="person-col">
+      <div class="person-col-head"><span class="dot" style="background:var(--board);"></span>${escapeHtml(familyLabel())}</div>
+      ${familyEvents.map(item).join('')}
+    </div>` : '';
+
   const cols = people.map(p=>{
-    const evs = state.events.filter(e=>e.date===ds && e.personId===p.id).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
-    const items = evs.map(e=>`<div class="day-event" data-editevent="${e.id}">${e.time?`<span class="t">${fmtEventTime(e)}</span>`:''}${escapeHtml(e.title)}</div>`).join('') || `<div style="font-size:12px;color:var(--ink-soft);">No events</div>`;
+    /* Explicit assignments only — a shared event lands in each person's column. */
+    const evs = dayEvents.filter(e=>eventPersonIds(e).includes(p.id));
     return `<div class="person-col">
         <div class="person-col-head">${avatarHtml(p,'sm')}${escapeHtml(p.name)}</div>
-        ${items}
+        ${evs.map(item).join('') || emptyNote}
       </div>`;
   }).join('');
-  return `<div class="day-columns">${cols}</div>`;
+  return `<div class="day-columns">${familyCol}${cols}</div>`;
 }
 
 function connectedCalServices(){
@@ -1234,7 +1294,8 @@ function connectedCalServices(){
 
 function eventModal(existing, presetDate){
   const isEdit = !!existing;
-  const ev = existing || {id:null, personId: state.people[0]?.id, date: presetDate || todayStr(), time:'', title:''};
+  /* New events start on the family calendar, which is the safe catch-all. */
+  const ev = existing || {id:null, personIds: [], date: presetDate || todayStr(), time:'', title:''};
   const inSeries = isEdit && !!ev.seriesId;
   const services = connectedCalServices();
   const serviceChecks = services.map(s=>{
@@ -1282,7 +1343,21 @@ function eventModal(existing, presetDate){
   openModal(`
     <h3>${isEdit?'Edit event':'Add event'}</h3>
     ${seriesBlock}
-    <div class="field"><label>Person</label><select id="evPerson">${peopleOptionsHtml(ev.personId)}</select></div>
+    <div class="field"><label>Who's this for?</label>
+      <div class="who-picker">
+        <label class="who-opt who-family">
+          <input type="checkbox" id="whoFamily" ${isFamilyEvent(ev)?'checked':''}>
+          <span class="dot" style="background:var(--board);"></span>
+          <span>${escapeHtml(familyLabel())} — everyone</span>
+        </label>
+        ${state.people.map(p=>`
+          <label class="who-opt">
+            <input type="checkbox" class="who-person" value="${p.id}" ${eventPersonIds(ev).includes(p.id)?'checked':''}>
+            ${avatarHtml(p,'sm')}<span>${escapeHtml(p.name)}</span>
+          </label>`).join('')}
+      </div>
+      <div id="whoHint" style="font-size:12px; color:var(--ink-soft); margin-top:5px;"></div>
+    </div>
     <div class="field"><label>Title</label><input id="evTitle" value="${escapeHtml(ev.title)}" placeholder="Soccer practice"></div>
     <div class="field"><label>Date</label><input type="date" id="evDate" value="${ev.date}">
       ${inSeries?`<div id="evDateNote" style="display:none; font-size:12px; color:var(--ink-soft); margin-top:4px;">Each event keeps its own date when you edit the whole series.</div>`:''}</div>
@@ -1296,6 +1371,30 @@ function eventModal(existing, presetDate){
     </div>
   `);
   document.getElementById('evCancel').onclick = closeModal;
+
+  /* Family and individuals are mutually exclusive: picking people clears the
+     family box, and ticking family clears the people. */
+  const whoFamily = document.getElementById('whoFamily');
+  const whoPeople = [...document.querySelectorAll('.who-person')];
+  const whoHint = document.getElementById('whoHint');
+  const syncWhoUi = ()=>{
+    const picked = whoPeople.filter(c=>c.checked).map(c=>c.value);
+    whoHint.textContent = whoFamily.checked
+      ? `Shows for everyone, on every person's view.`
+      : (picked.length
+          ? `Shows for ${picked.map(id=>personById(id).name).join(' and ')}.`
+          : `Nothing picked — this will be saved to ${familyLabel()}.`);
+  };
+  whoFamily.onchange = ()=>{
+    if(whoFamily.checked) whoPeople.forEach(c=>c.checked = false);
+    syncWhoUi();
+  };
+  whoPeople.forEach(c=>c.onchange = ()=>{
+    if(c.checked) whoFamily.checked = false;
+    syncWhoUi();
+  });
+  syncWhoUi();
+  const readWho = ()=>whoFamily.checked ? [] : whoPeople.filter(c=>c.checked).map(c=>c.value);
 
   if(!isEdit){
     const repeatSel = document.getElementById('evRepeat');
@@ -1367,14 +1466,14 @@ function eventModal(existing, presetDate){
   document.getElementById('evSave').onclick = async ()=>{
     const title = document.getElementById('evTitle').value.trim();
     if(!title){ toast('Give the event a title.', 'error'); return; }
-    const personId = document.getElementById('evPerson').value;
+    const personIds = readWho();
     const date = document.getElementById('evDate').value;
     const time = document.getElementById('evTime').value;
 
     /* ---- Edit applied to the whole series ---- */
     if(inSeries && scopeValue()==='all'){
       const members = seriesMembers(ev.seriesId);
-      members.forEach(m=>{ m.title = title; m.personId = personId; m.time = time; });
+      members.forEach(m=>{ m.title = title; m.personIds = personIds.slice(); m.time = time; });
       const errs = [];
       for(const s of services){
         const masterId = ev[s.seriesField];
@@ -1395,7 +1494,7 @@ function eventModal(existing, presetDate){
         const seriesId = uid();
         const rule = {freq: rec.freq, count: dates.length};
         const instances = dates.map((d, i)=>({
-          id: uid(), personId, title, date: d, time,
+          id: uid(), personIds: personIds.slice(), title, date: d, time,
           source: undefined, seriesId, seriesRule: rule, seriesIndex: i
         }));
         const errs = [];
@@ -1418,7 +1517,7 @@ function eventModal(existing, presetDate){
     /* ---- Single event (or one instance of a series) ---- */
     const data = {
       id: ev.id || uid(),
-      personId, title, date, time,
+      personIds, title, date, time,
       source: ev.source,
       googleId: ev.googleId,
       graphId: ev.graphId,
@@ -2163,7 +2262,7 @@ function importIcsText(text, personId){
   parsed.forEach(e=>{
     const extUid = e.uid || (e.date+'|'+(e.time||'')+'|'+e.title);
     if(state.events.some(x=>x.extUid===extUid)){ skipped++; return; }
-    state.events.push({id:uid(), personId, title:e.title, date:e.date, time:e.time||'', source:'import', extUid});
+    state.events.push({id:uid(), personIds: personId ? [personId] : [], title:e.title, date:e.date, time:e.time||'', source:'import', extUid});
     added++;
   });
   return {added, skipped, total:parsed.length};
@@ -2172,15 +2271,16 @@ function importedCount(){ return state.events.filter(e=>e.source==='import').len
 
 function icsStamp(d){ return d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'T'+String(d.getHours()).padStart(2,'0')+String(d.getMinutes()).padStart(2,'0')+'00'; }
 function exportIcs(personId){
-  const events = personId ? state.events.filter(e=>e.personId===personId) : state.events;
+  /* Exporting for one person includes the family-wide events too — those are
+     genuinely on their calendar. */
+  const events = personId ? state.events.filter(e=>eventMatchesFilter(e, personId)) : state.events;
   let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//FamilyHub//EN\r\nCALSCALE:GREGORIAN\r\n';
   const now = icsStamp(new Date());
   events.forEach(e=>{
-    const p = personById(e.personId);
     const dt = e.date.replace(/-/g,'');
     const startT = e.time ? e.time.replace(':','')+'00' : '090000';
     const endHour = e.time ? String((parseInt(e.time.slice(0,2))+1)%24).padStart(2,'0')+e.time.slice(2,5).replace(':','')+'00' : '100000';
-    const summary = (p?p.name+': ':'')+e.title;
+    const summary = eventPeopleLabel(e)+': '+e.title;
     ics += 'BEGIN:VEVENT\r\n';
     ics += `UID:${e.id}@familyhub\r\n`;
     ics += `DTSTAMP:${now}\r\n`;
@@ -2296,7 +2396,7 @@ const outlookSync = {
       else {
         const sibling = masterId ? state.events.find(x=>x.seriesGraphId===masterId) : null;
         state.events.push({
-          id:uid(), personId, title, date:parsed.date, time:parsed.time, source:'outlook', graphId:ev.id,
+          id:uid(), personIds: personId ? [personId] : [], title, date:parsed.date, time:parsed.time, source:'outlook', graphId:ev.id,
           seriesId: masterId ? (sibling ? sibling.seriesId : uid()) : undefined,
           seriesGraphId: masterId || undefined,
           seriesRule: sibling ? sibling.seriesRule : undefined
@@ -2551,7 +2651,7 @@ const googleSync = {
       else {
         const sibling = masterId ? state.events.find(x=>x.seriesGoogleId===masterId) : null;
         state.events.push({
-          id:uid(), personId, title, date:parsed.date, time:parsed.time, source:'google', googleId:ev.id,
+          id:uid(), personIds: personId ? [personId] : [], title, date:parsed.date, time:parsed.time, source:'google', googleId:ev.id,
           seriesId: masterId ? (sibling ? sibling.seriesId : uid()) : undefined,
           seriesGoogleId: masterId || undefined,
           seriesRule: sibling ? sibling.seriesRule : undefined
