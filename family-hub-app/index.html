@@ -3344,11 +3344,21 @@ async function googleAutoPull(){
   }catch(e){ /* stay quiet in the background; the panel shows real errors */ }
 }
 /* The Calendar tab's Sync button pulls straight from the connected calendars.
-   It only falls back to opening the sync panel when nothing is connected yet,
-   since at that point there's nothing to refresh — you need to set it up first. */
+   It only falls back to opening the sync panel when there's nothing to refresh
+   or when the failure is something only the panel can fix. */
 async function runCalendarSync(btn){
+  const g = state.google || {};
+  const googleUsable = googleSync.isConnected() || googleSync.hasReadKey() || (g.clientId && g.consented);
   const jobs = [];
-  if(googleSync.canRead())      jobs.push({label:'Google',  run:()=>googleSync.pull(googleSyncPersonId())});
+  if(googleUsable) jobs.push({label:'Google', run: async ()=>{
+    /* Prefer a real signed-in session. The API-key path only reads PUBLIC
+       calendars, so using it against a private family calendar 404s — which is
+       exactly what happens on a fresh load before the token is restored. */
+    if(!googleSync.isConnected() && g.clientId){
+      try{ await googleSync.connect(true); }catch(e){ /* fall back to whatever access exists */ }
+    }
+    return googleSync.pull(googleSyncPersonId());
+  }});
   if(outlookSync.isConnected()) jobs.push({label:'Outlook', run:()=>outlookSync.pull(googleSyncPersonId())});
   if(!jobs.length){ syncModal(); return; }
 
@@ -3368,7 +3378,13 @@ async function runCalendarSync(btn){
   if(btn){ btn.disabled = false; btn.innerHTML = original; }
   render();
 
-  if(errs.length){ toast(errs.join(' · '), 'error'); return; }
+  if(errs.length){
+    toast(errs.join(' · '), 'error');
+    /* Auth and access failures can't be fixed from here, so open the panel
+       where the Connect button and calendar ID actually live. */
+    if(errs.some(m=>/expired|denied|not found|read-only|not connected|connect again/i.test(m))) syncModal();
+    return;
+  }
   const bits = [];
   if(added)   bits.push(`${added} new`);
   if(updated) bits.push(`${updated} updated`);
