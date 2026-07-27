@@ -198,6 +198,61 @@
   .pts-tag{font-size:11px; color:var(--ink-soft); font-weight:700; white-space:nowrap;}
   .chore-del{background:transparent; border:none; color:var(--ink-soft); cursor:pointer; font-size:15px;}
 
+  /* ---------- Habit tracker ---------- */
+  /* Soft per-week tints, cycled across the weeks of the month so each block of
+     days reads as one group at a glance. */
+  .habit-wk0{--wk:#F7E3EC;} .habit-wk1{--wk:#E8E3F7;} .habit-wk2{--wk:#DEE9F8;}
+  .habit-wk3{--wk:#DEF1E5;} .habit-wk4{--wk:#FBF0D9;} .habit-wk5{--wk:#F3E5DC;}
+  .habit-scroll{overflow-x:auto; border:1px solid var(--line); border-radius:10px; background:#fff;}
+  .habit-table{border-collapse:separate; border-spacing:0; width:100%; font-size:12px;}
+  .habit-table th, .habit-table td{border-bottom:1px solid var(--line); border-right:1px solid var(--line);}
+  .habit-table tr:last-child th, .habit-table tr:last-child td{border-bottom:none;}
+  /* The habit name stays put while the day columns scroll sideways. */
+  .habit-name-col{
+    position:sticky; left:0; z-index:2; background:#fff; text-align:left;
+    padding:6px 10px; font-weight:600; min-width:150px; max-width:190px;
+    box-shadow:1px 0 0 var(--line);
+  }
+  /* Name and the remove button share a row so a long habit wraps its text
+     rather than pushing the ✕ onto a line of its own. */
+  .habit-name-cell{display:flex; align-items:flex-start; gap:6px;}
+  .habit-name-cell .txt{flex:1; min-width:0; overflow-wrap:anywhere;}
+  thead .habit-name-col{z-index:3; background:var(--paper-2);}
+  .habit-wk-head{
+    background:var(--wk); font-size:11px; font-weight:700; text-transform:uppercase;
+    letter-spacing:0.03em; padding:5px 4px; text-align:center; color:var(--ink);
+  }
+  .habit-dow{
+    background:var(--wk); padding:3px 0; text-align:center; font-weight:700;
+    width:30px; min-width:30px; line-height:1.25;
+  }
+  .habit-dow .d{font-size:9.5px; color:var(--ink-soft); display:block; text-transform:uppercase;}
+  .habit-dow .n{font-family:'JetBrains Mono'; font-size:11px;}
+  .habit-dow.is-today{background:var(--mustard); color:#3a2a05;}
+  .habit-dow.is-today .d{color:#3a2a05;}
+  .habit-cell{padding:0; text-align:center; background:color-mix(in srgb, var(--wk) 32%, #fff);}
+  .habit-cell.is-today{background:color-mix(in srgb, var(--mustard) 18%, #fff);}
+  .habit-cell.is-future{background:repeating-linear-gradient(45deg,#fafafa,#fafafa 3px,#f2f2f2 3px,#f2f2f2 6px);}
+  .habit-box{
+    width:17px; height:17px; margin:4px auto; display:block; cursor:pointer;
+    border:1.5px solid #b9b2a4; border-radius:4px; background:#fff; padding:0;
+    font-size:11px; line-height:1; color:#fff;
+  }
+  .habit-box.on{background:var(--good); border-color:var(--good);}
+  .habit-box:disabled{cursor:default; opacity:0.35;}
+  .habit-row-total{padding:0 8px; text-align:center; font-family:'JetBrains Mono'; font-size:11px; color:var(--ink-soft); white-space:nowrap;}
+  .habit-del{background:transparent; border:none; color:var(--ink-soft); cursor:pointer; font-size:13px; padding:0; line-height:1.4; flex-shrink:0;}
+  .habit-sub{font-size:12px; color:var(--ink-soft); margin:16px 0 8px;}
+  .habit-chart{background:#fff; border:1px solid var(--line); border-radius:10px; padding:12px 14px 6px;}
+  .habit-stat-row{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;}
+  .habit-stat{flex:1; min-width:120px; background:#fff; border:1px solid var(--line); border-radius:10px; padding:10px 12px;}
+  .habit-stat .lbl{font-size:11px; font-weight:700; text-transform:uppercase; color:var(--ink-soft);}
+  .habit-stat .num{font-family:'JetBrains Mono'; font-size:22px; font-weight:700; margin-top:2px;}
+  @media(max-width:640px){
+    .habit-name-col{min-width:118px; max-width:140px; font-size:11.5px; padding:6px 8px;}
+    .habit-stat{min-width:100px;}
+  }
+
   /* ---------- Rewards ---------- */
   .points-strip{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px;}
   .points-card{flex:1; min-width:120px; border-radius:12px; padding:14px; box-shadow:var(--shadow);}
@@ -294,6 +349,7 @@
   <nav class="tabs" id="tabNav">
     <button data-tab="calendar" class="active">📅 Calendar</button>
     <button data-tab="chores">✅ Chores</button>
+    <button data-tab="habits">🌱 Habits</button>
     <button data-tab="rewards">⭐ Rewards</button>
     <button data-tab="budget">💰 Budget</button>
     <button data-tab="meals">🍽️ Meals</button>
@@ -379,12 +435,15 @@ function defaultState(){
     points: {},
     budget: { transactions: [] },
     meals: { plan:{}, recipes:[], pantry:[], grocery:[] },
+    habits: { items: [], log: {} },
     outlook: { clientId: '' },
     google: { clientId: '640349356853-ljl8ljpfpktegj49f9f4kr1kkb6fngv2.apps.googleusercontent.com', calendarId: 'ac3601938b78b11f2849f0a53d25e7047d4c115a510dd7d02464bc8a72b60a85@group.calendar.google.com', apiKey: '', consented: false },
     pin: '1234',
     calView: 'month',
     calDate: todayStr(),
     calFilter: 'all',
+    habitMonth: monthStr(new Date()),
+    habitPersonId: 'p1',
     familyLabel: 'Family calendar'
   };
 }
@@ -536,6 +595,11 @@ function migrateState(s){
     if(Array.isArray(c.done)){ c.done = false; }
     if(c.done===undefined) c.done = false;
   });
+  if(!s.habits) s.habits = { items: [], log: {} };
+  if(!Array.isArray(s.habits.items)) s.habits.items = [];
+  if(!s.habits.log || typeof s.habits.log !== 'object') s.habits.log = {};
+  if(!s.habitMonth) s.habitMonth = monthStr(new Date());
+  if(!s.habitPersonId) s.habitPersonId = (s.people && s.people[0] && s.people[0].id) || 'p1';
   return s;
 }
 
@@ -795,6 +859,7 @@ function render(){
   try{
     if(activeTab==='calendar') main.innerHTML = renderCalendar();
     else if(activeTab==='chores') main.innerHTML = renderChores();
+    else if(activeTab==='habits') main.innerHTML = renderHabits();
     else if(activeTab==='rewards') main.innerHTML = renderRewards();
     else if(activeTab==='budget') main.innerHTML = renderBudget();
     else if(activeTab==='meals') main.innerHTML = renderMeals();
@@ -1250,6 +1315,241 @@ function choreModal(personId){
     state.chores.push({id:uid(), personId, name, points: Number(document.getElementById('chorePts').value)||1, done:false});
     saveState(); closeModal(); render();
   };
+}
+
+/* ============================= HABIT TRACKER =============================
+   A month grid of habits: daily habits get one checkbox per day (grouped into
+   colour-tinted weeks), weekly habits get one checkbox per week. Completion is
+   stored in a flat `log` map keyed `habitId|date`, so adding or removing a habit
+   never has to rewrite history. */
+function monthStr(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
+function parseMonth(ym){ const [y,m] = ym.split('-').map(Number); return new Date(y, m-1, 1); }
+
+/* Days of the month split into Sunday-start weeks, matching the calendar tab. */
+function habitWeeks(ym){
+  const first = parseMonth(ym);
+  const total = new Date(first.getFullYear(), first.getMonth()+1, 0).getDate();
+  const weeks = [];
+  let cur = [];
+  for(let i=1; i<=total; i++){
+    const d = new Date(first.getFullYear(), first.getMonth(), i);
+    if(d.getDay()===0 && cur.length){ weeks.push(cur); cur = []; }
+    cur.push(d);
+  }
+  if(cur.length) weeks.push(cur);
+  return weeks.map((days, i)=>({ label:'Week '+(i+1), days, tint:'habit-wk'+(i%6) }));
+}
+function habitLogKey(habit, d){
+  /* Weekly habits collapse to their week's start date so any day in that week
+     toggles the same box. */
+  const anchor = habit.type==='weekly' ? startOfWeek(d) : d;
+  return habit.id+'|'+fmtDate(anchor);
+}
+function habitDone(habit, d){ return !!state.habits.log[habitLogKey(habit, d)]; }
+function habitsFor(personId, type){
+  return state.habits.items.filter(h=>h.personId===personId && h.type===type);
+}
+function habitPerson(){
+  return personById(state.habitPersonId) || state.people[0];
+}
+
+/* Share of that day's daily habits that are ticked — the productivity series. */
+function habitDayPct(dailyHabits, d){
+  if(!dailyHabits.length) return 0;
+  const done = dailyHabits.filter(h=>habitDone(h, d)).length;
+  return Math.round((done / dailyHabits.length) * 100);
+}
+function habitStreak(dailyHabits){
+  if(!dailyHabits.length) return 0;
+  let streak = 0;
+  const d = new Date();
+  /* A day only counts once it's complete; today not being done yet shouldn't
+     wipe out a streak, so start from yesterday when today is incomplete. */
+  if(habitDayPct(dailyHabits, d) < 100) d.setDate(d.getDate()-1);
+  for(let i=0; i<400; i++){
+    if(habitDayPct(dailyHabits, d) < 100) break;
+    streak++;
+    d.setDate(d.getDate()-1);
+  }
+  return streak;
+}
+
+/* Inline SVG area chart — no library, scales with the card. */
+function habitChart(dailyHabits, days){
+  const W = 720, H = 130, padL = 30, padR = 8, padT = 10, padB = 20;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const today = todayStr();
+  const scored = days.filter(d=>fmtDate(d) <= today);
+  if(!dailyHabits.length || scored.length < 2){
+    return `<div class="habit-chart"><div style="font-size:12px;color:var(--ink-soft);padding:14px 0;text-align:center;">
+      ${dailyHabits.length ? 'Tick a couple of days and your productivity line shows up here.' : 'Add a daily habit to start tracking productivity.'}
+    </div></div>`;
+  }
+  const x = i => padL + (scored.length===1 ? plotW/2 : (i/(scored.length-1))*plotW);
+  const y = pct => padT + plotH - (pct/100)*plotH;
+  const pts = scored.map((d,i)=>`${x(i).toFixed(1)},${y(habitDayPct(dailyHabits,d)).toFixed(1)}`);
+  const area = `M ${padL},${padT+plotH} L ${pts.join(' L ')} L ${x(scored.length-1).toFixed(1)},${padT+plotH} Z`;
+  const grid = [0,50,100].map(p=>`
+    <line x1="${padL}" y1="${y(p)}" x2="${W-padR}" y2="${y(p)}" stroke="var(--line)" stroke-width="1"/>
+    <text x="${padL-6}" y="${y(p)+3}" text-anchor="end" font-size="9" fill="var(--ink-soft)">${p}%</text>`).join('');
+  const step = Math.ceil(scored.length/12);
+  const xLabels = scored.map((d,i)=> i%step ? '' :
+    `<text x="${x(i).toFixed(1)}" y="${H-6}" text-anchor="middle" font-size="9" fill="var(--ink-soft)">${d.getDate()}</text>`).join('');
+  return `<div class="habit-chart">
+      <div style="font-size:12px; font-weight:700; margin-bottom:4px;">Daily productivity</div>
+      <svg viewBox="0 0 ${W} ${H}" width="100%" height="130" role="img" aria-label="Daily habit completion for the month">
+        ${grid}
+        <path d="${area}" fill="var(--good)" opacity="0.16"/>
+        <polyline points="${pts.join(' ')}" fill="none" stroke="var(--good)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+        ${xLabels}
+      </svg>
+    </div>`;
+}
+
+function renderHabits(){
+  const person = habitPerson();
+  if(!person) return `<div class="card"><div class="empty">Add someone in Settings first.</div></div>`;
+  const ym = state.habitMonth || monthStr(new Date());
+  const first = parseMonth(ym);
+  const weeks = habitWeeks(ym);
+  const days = weeks.flatMap(w=>w.days);
+  const today = todayStr();
+  const daily = habitsFor(person.id, 'daily');
+  const weekly = habitsFor(person.id, 'weekly');
+
+  const chips = state.people.map(p=>
+    `<span class="person-chip ${p.id===person.id?'active':''}" data-habitperson="${p.id}">${avatarHtml(p,'sm')}${escapeHtml(p.name)}</span>`
+  ).join('');
+
+  /* ---- Stats ---- */
+  const scored = days.filter(d=>fmtDate(d) <= today);
+  const monthPct = daily.length && scored.length
+    ? Math.round(scored.reduce((sum,d)=>sum + habitDayPct(daily,d), 0) / scored.length) : 0;
+  const todayPct = daily.length ? habitDayPct(daily, new Date()) : 0;
+  const inThisMonth = monthStr(new Date()) === ym;
+  const stats = `<div class="habit-stat-row">
+      <div class="habit-stat"><div class="lbl">${inThisMonth?'Today':'Month total'}</div><div class="num">${inThisMonth?todayPct:monthPct}%</div></div>
+      <div class="habit-stat"><div class="lbl">Month average</div><div class="num">${monthPct}%</div></div>
+      <div class="habit-stat"><div class="lbl">Current streak</div><div class="num">${habitStreak(daily)}<span style="font-size:12px;font-weight:600;"> ${habitStreak(daily)===1?'day':'days'}</span></div></div>
+    </div>`;
+
+  /* ---- Daily grid: a week-grouped header, one checkbox per day ---- */
+  const wkHead = weeks.map(w=>`<th class="habit-wk-head ${w.tint}" colspan="${w.days.length}">${w.label}</th>`).join('');
+  const dowHead = weeks.map(w=>w.days.map(d=>{
+    const isToday = fmtDate(d)===today;
+    return `<th class="habit-dow ${w.tint} ${isToday?'is-today':''}"><span class="d">${DOW[d.getDay()][0]}</span><span class="n">${d.getDate()}</span></th>`;
+  }).join('')).join('');
+
+  const dailyRows = daily.map(h=>{
+    const cells = weeks.map(w=>w.days.map(d=>{
+      const ds = fmtDate(d);
+      const future = ds > today;
+      const on = habitDone(h, d);
+      return `<td class="habit-cell ${w.tint} ${ds===today?'is-today':''} ${future?'is-future':''}">
+        <button class="habit-box ${on?'on':''}" data-habit="${h.id}" data-habitdate="${ds}" ${future?'disabled':''}
+          title="${escapeHtml(h.name)} · ${ds}" aria-label="${escapeHtml(h.name)} on ${ds}">${on?'✓':''}</button></td>`;
+    }).join('')).join('');
+    const done = days.filter(d=>fmtDate(d)<=today && habitDone(h,d)).length;
+    return `<tr>
+        <th class="habit-name-col"><div class="habit-name-cell"><span class="txt">${escapeHtml(h.name)}</span><button class="habit-del" data-delhabit="${h.id}" title="Remove habit">✕</button></div></th>
+        ${cells}
+        <td class="habit-row-total">${done}/${scored.length}</td>
+      </tr>`;
+  }).join('');
+
+  const dailyTable = daily.length ? `
+    <div class="habit-scroll">
+      <table class="habit-table">
+        <thead>
+          <tr><th class="habit-name-col" rowspan="2">Daily habits</th>${wkHead}<th class="habit-row-total" rowspan="2">Done</th></tr>
+          <tr>${dowHead}</tr>
+        </thead>
+        <tbody>${dailyRows}</tbody>
+      </table>
+    </div>` : `<div class="empty">No daily habits yet — add one to build the grid 🌱</div>`;
+
+  /* ---- Weekly grid: one checkbox per week ---- */
+  const weeklyRows = weekly.map(h=>{
+    const cells = weeks.map(w=>{
+      const anchor = w.days[0];
+      const future = fmtDate(startOfWeek(anchor)) > today;
+      const on = habitDone(h, anchor);
+      return `<td class="habit-cell ${w.tint}">
+        <button class="habit-box ${on?'on':''}" data-habit="${h.id}" data-habitdate="${fmtDate(anchor)}" ${future?'disabled':''}
+          title="${escapeHtml(h.name)} · ${w.label}">${on?'✓':''}</button></td>`;
+    }).join('');
+    return `<tr>
+        <th class="habit-name-col"><div class="habit-name-cell"><span class="txt">${escapeHtml(h.name)}</span><button class="habit-del" data-delhabit="${h.id}" title="Remove habit">✕</button></div></th>
+        ${cells}
+      </tr>`;
+  }).join('');
+
+  const weeklyTable = weekly.length ? `
+    <div class="habit-scroll">
+      <table class="habit-table">
+        <thead><tr><th class="habit-name-col">Weekly habits</th>${weeks.map(w=>`<th class="habit-wk-head ${w.tint}" style="min-width:64px;">${w.label}</th>`).join('')}</tr></thead>
+        <tbody>${weeklyRows}</tbody>
+      </table>
+    </div>` : `<div class="empty">No weekly habits yet — things like "clean the bathroom" fit well here 🧽</div>`;
+
+  return `<div class="card">
+      <div class="section-title">
+        <h2>Habit tracker</h2>
+        <div style="display:flex; gap:8px;">
+          <button class="btn btn-ghost" id="addWeeklyHabitBtn">+ Weekly habit</button>
+          <button class="btn btn-mustard" id="addDailyHabitBtn">+ Daily habit</button>
+        </div>
+      </div>
+      <div class="people-row">${chips}</div>
+      <div class="cal-toolbar">
+        <div class="cal-nav">
+          <button class="btn btn-ghost" id="habitPrev">◀</button>
+          <strong class="display" style="font-size:17px;">${MONTHS[first.getMonth()]} ${first.getFullYear()}</strong>
+          <button class="btn btn-ghost" id="habitNext">▶</button>
+          <button class="btn btn-ghost" id="habitToday">This month</button>
+        </div>
+      </div>
+      ${stats}
+      ${habitChart(daily, days)}
+      <div class="habit-sub">Daily habits — tick each day as you go</div>
+      ${dailyTable}
+      <div class="habit-sub">Weekly habits — one tick per week</div>
+      ${weeklyTable}
+    </div>`;
+}
+
+function habitModal(type){
+  const person = habitPerson();
+  openModal(`
+    <h3>Add ${type} habit</h3>
+    <div class="field"><label>Person</label><select id="habitPersonSel">${peopleOptionsHtml(person.id)}</select></div>
+    <div class="field"><label>Habit</label><input id="habitName" placeholder="${type==='daily'?'Read 30 minutes':'Clean the bathroom'}"></div>
+    <div class="field"><label>Tracked</label>
+      <select id="habitType">
+        <option value="daily" ${type==='daily'?'selected':''}>Every day</option>
+        <option value="weekly" ${type==='weekly'?'selected':''}>Once a week</option>
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="habitCancel">Cancel</button>
+      <button class="btn btn-primary" id="habitSave">Save</button>
+    </div>
+  `);
+  document.getElementById('habitCancel').onclick = closeModal;
+  document.getElementById('habitSave').onclick = async ()=>{
+    const name = document.getElementById('habitName').value.trim();
+    if(!name){ toast('Give the habit a name.', 'error'); return; }
+    const personId = document.getElementById('habitPersonSel').value;
+    state.habits.items.push({ id:uid(), personId, name, type: document.getElementById('habitType').value });
+    state.habitPersonId = personId;   // jump to whoever the habit was added for
+    await saveState(); closeModal(); render();
+  };
+}
+function shiftHabitMonth(dir){
+  const d = parseMonth(state.habitMonth || monthStr(new Date()));
+  d.setMonth(d.getMonth()+dir);
+  state.habitMonth = monthStr(d);
+  saveState(); render();
 }
 
 /* ============================= REWARDS ============================= */
@@ -2508,6 +2808,39 @@ function attachHandlers(){
     state.chores = state.chores.filter(c=>c.id!==b.dataset.delchore);
     saveState(); render();
   }));
+
+  // Habits
+  const addDailyHabit = document.getElementById('addDailyHabitBtn');
+  if(addDailyHabit) addDailyHabit.onclick = ()=>habitModal('daily');
+  const addWeeklyHabit = document.getElementById('addWeeklyHabitBtn');
+  if(addWeeklyHabit) addWeeklyHabit.onclick = ()=>habitModal('weekly');
+  const habitPrev = document.getElementById('habitPrev');
+  if(habitPrev) habitPrev.onclick = ()=>shiftHabitMonth(-1);
+  const habitNext = document.getElementById('habitNext');
+  if(habitNext) habitNext.onclick = ()=>shiftHabitMonth(1);
+  const habitToday = document.getElementById('habitToday');
+  if(habitToday) habitToday.onclick = ()=>{ state.habitMonth = monthStr(new Date()); saveState(); render(); };
+  document.querySelectorAll('[data-habitperson]').forEach(el=>el.onclick = ()=>{
+    state.habitPersonId = el.dataset.habitperson; saveState(); render();
+  });
+  document.querySelectorAll('[data-habit]').forEach(b=>b.onclick = ()=>{
+    const habit = state.habits.items.find(h=>h.id===b.dataset.habit);
+    if(!habit) return;
+    const key = habitLogKey(habit, parseDate(b.dataset.habitdate));
+    if(state.habits.log[key]) delete state.habits.log[key];
+    else state.habits.log[key] = true;
+    saveState(); render();
+  });
+  document.querySelectorAll('[data-delhabit]').forEach(b=>b.onclick = (e)=>{
+    e.stopPropagation();
+    requireUnlock(()=>{
+      const id = b.dataset.delhabit;
+      state.habits.items = state.habits.items.filter(h=>h.id!==id);
+      /* Drop that habit's history too, so a re-added habit starts clean. */
+      Object.keys(state.habits.log).forEach(k=>{ if(k.startsWith(id+'|')) delete state.habits.log[k]; });
+      saveState(); render();
+    });
+  });
 
   // Rewards
   const addRewardBtn = document.getElementById('addRewardBtn');
