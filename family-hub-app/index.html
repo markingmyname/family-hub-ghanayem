@@ -210,9 +210,14 @@
   /* The habit name stays put while the day columns scroll sideways. */
   .habit-name-col{
     position:sticky; left:0; z-index:2; background:#fff; text-align:left;
-    padding:6px 10px; font-weight:600; min-width:150px; max-width:190px;
+    padding:6px 10px; font-weight:600; width:150px; min-width:150px; max-width:150px;
     box-shadow:1px 0 0 var(--line);
   }
+  /* Table layout hands leftover width to whichever cell asks for it. Without
+     this filler the weekly grid (few columns) balloons its cells while the
+     daily grid (many columns) stays compact — so both get one, and both then
+     size to content and scroll the same way. */
+  .habit-filler{width:100%; min-width:0; background:#fff; border-right:none !important; padding:0;}
   /* Name and the remove button share a row so a long habit wraps its text
      rather than pushing the ✕ onto a line of its own. */
   .habit-name-cell{display:flex; align-items:flex-start; gap:6px;}
@@ -249,7 +254,7 @@
   .habit-stat .lbl{font-size:11px; font-weight:700; text-transform:uppercase; color:var(--ink-soft);}
   .habit-stat .num{font-family:'JetBrains Mono'; font-size:22px; font-weight:700; margin-top:2px;}
   @media(max-width:640px){
-    .habit-name-col{min-width:118px; max-width:140px; font-size:11.5px; padding:6px 8px;}
+    .habit-name-col{width:118px; min-width:118px; max-width:118px; font-size:11.5px; padding:6px 8px;}
     .habit-stat{min-width:100px;}
   }
 
@@ -1454,6 +1459,7 @@ function renderHabits(){
         <th class="habit-name-col"><div class="habit-name-cell"><span class="txt">${escapeHtml(h.name)}</span><button class="habit-del" data-delhabit="${h.id}" title="Remove habit">✕</button></div></th>
         ${cells}
         <td class="habit-row-total">${done}/${scored.length}</td>
+        <td class="habit-filler"></td>
       </tr>`;
   }).join('');
 
@@ -1461,7 +1467,7 @@ function renderHabits(){
     <div class="habit-scroll">
       <table class="habit-table">
         <thead>
-          <tr><th class="habit-name-col" rowspan="2">Daily habits</th>${wkHead}<th class="habit-row-total" rowspan="2">Done</th></tr>
+          <tr><th class="habit-name-col" rowspan="2">Daily habits</th>${wkHead}<th class="habit-row-total" rowspan="2">Done</th><th class="habit-filler" rowspan="2"></th></tr>
           <tr>${dowHead}</tr>
         </thead>
         <tbody>${dailyRows}</tbody>
@@ -1481,13 +1487,14 @@ function renderHabits(){
     return `<tr>
         <th class="habit-name-col"><div class="habit-name-cell"><span class="txt">${escapeHtml(h.name)}</span><button class="habit-del" data-delhabit="${h.id}" title="Remove habit">✕</button></div></th>
         ${cells}
+        <td class="habit-filler"></td>
       </tr>`;
   }).join('');
 
   const weeklyTable = weekly.length ? `
     <div class="habit-scroll">
       <table class="habit-table">
-        <thead><tr><th class="habit-name-col">Weekly habits</th>${weeks.map(w=>`<th class="habit-wk-head ${w.tint}" style="min-width:64px;">${w.label}</th>`).join('')}</tr></thead>
+        <thead><tr><th class="habit-name-col">Weekly habits</th>${weeks.map(w=>`<th class="habit-wk-head ${w.tint}" style="min-width:64px;">${w.label}</th>`).join('')}<th class="habit-filler"></th></tr></thead>
         <tbody>${weeklyRows}</tbody>
       </table>
     </div>` : `<div class="empty">No weekly habits yet — things like "clean the bathroom" fit well here 🧽</div>`;
