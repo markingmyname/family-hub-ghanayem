@@ -134,6 +134,16 @@
   .dot{width:16px; height:16px; border-radius:50%; flex-shrink:0;}
 
   /* ---------- Calendar ---------- */
+  .tz-strip{
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    background:var(--paper-2); border:1px solid var(--line); border-radius:10px;
+    padding:7px 12px; margin-bottom:12px; font-size:12.5px;
+  }
+  .tz-one{display:flex; align-items:baseline; gap:6px;}
+  .tz-name{font-weight:700;}
+  .tz-now{font-family:'JetBrains Mono'; font-size:13px;}
+  .tz-sep{color:var(--ink-soft);}
+  .tz-hint{margin-left:auto; color:var(--ink-soft); font-size:11.5px;}
   .cal-toolbar{display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; flex-wrap:wrap; gap:10px;}
   .cal-nav{display:flex; align-items:center; gap:8px;}
   .view-toggle{display:flex; background:var(--paper-2); border-radius:10px; padding:3px; border:1px solid var(--line);}
@@ -449,6 +459,9 @@ function defaultState(){
     calFilter: 'all',
     habitMonth: monthStr(new Date()),
     habitPersonId: 'p1',
+    timeFormat: '12h',
+    timeZones: { secondaryEnabled:false, primary:'', secondary:'Europe/London', primaryLabel:'', secondaryLabel:'' },
+    sleepAfterMin: 15,
     familyLabel: 'Family calendar'
   };
 }
@@ -457,6 +470,130 @@ function todayStr(){ const d=new Date(); return fmtDate(d); }
 function fmtDate(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function parseDate(s){ const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); }
 function uid(){ return Math.random().toString(36).slice(2,9); }
+
+/* Events always STORE time as 24-hour "HH:MM" — that's what <input type="time">,
+   iCal, Google and Graph all expect. This is display-only formatting. */
+function use24h(){ return state && state.timeFormat === '24h'; }
+function fmtTime(hhmm){
+  if(!hhmm) return '';
+  if(use24h()) return hhmm;
+  const [h, m] = hhmm.split(':').map(Number);
+  if(isNaN(h)) return hhmm;
+  const suffix = h < 12 ? 'AM' : 'PM';
+  const hour = h % 12 === 0 ? 12 : h % 12;
+  return `${hour}:${String(m||0).padStart(2,'0')} ${suffix}`;
+}
+
+/* ============================= TIME ZONES =============================
+   Event times are stored as bare wall-clock "HH:MM" with no zone, and are
+   understood to be in the PRIMARY zone. To show a second zone we have to pin
+   that wall time to a real instant first, then re-format it elsewhere. */
+function deviceZone(){
+  try{ return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }catch(e){ return 'UTC'; }
+}
+function tzSettings(){
+  const t = (state && state.timeZones) || {};
+  return {
+    enabled: !!t.secondaryEnabled,
+    primary: t.primary || deviceZone(),
+    secondary: t.secondary || 'UTC',
+    primaryLabel: t.primaryLabel || '',
+    secondaryLabel: t.secondaryLabel || ''
+  };
+}
+/* How far `tz` sits from UTC at that instant, DST included. */
+function tzOffsetMs(date, tz){
+  try{
+    const parts = Object.fromEntries(
+      new Intl.DateTimeFormat('en-US', { timeZone: tz, hour12:false,
+        year:'numeric', month:'2-digit', day:'2-digit',
+        hour:'2-digit', minute:'2-digit', second:'2-digit' })
+        .formatToParts(date).map(p=>[p.type, p.value]));
+    const asUTC = Date.UTC(+parts.year, parts.month-1, +parts.day, (+parts.hour)%24, +parts.minute, +parts.second);
+    return asUTC - date.getTime();
+  }catch(e){ return 0; }
+}
+/* Wall time in a zone -> the actual instant. Applied twice so a reading taken
+   on the wrong side of a DST change still lands on the right offset. */
+function zonedWallToInstant(dateStr, timeStr, tz){
+  const naive = new Date(`${dateStr}T${(timeStr||'00:00')}:00Z`);
+  if(isNaN(naive)) return null;
+  let instant = new Date(naive.getTime() - tzOffsetMs(naive, tz));
+  instant = new Date(naive.getTime() - tzOffsetMs(instant, tz));
+  return instant;
+}
+/* Reads a wall time written in `sourceTz` and prints it as it would read in
+   `targetTz`. Passing the same zone for both is a no-op round trip, which is
+   exactly what the primary column wants. */
+function fmtTimeInZone(dateStr, timeStr, targetTz, sourceTz){
+  const from = sourceTz || tzSettings().primary;
+  const instant = zonedWallToInstant(dateStr, timeStr, from);
+  if(!instant) return '';
+  try{
+    return new Intl.DateTimeFormat([], { timeZone: targetTz, hour:'numeric', minute:'2-digit', hour12: !use24h() })
+      .format(instant);
+  }catch(e){ return fmtTime(timeStr); }
+}
+/* The clock strip shows a real instant, so it skips the wall-time step. */
+function fmtNowInZone(tz){
+  try{
+    return new Intl.DateTimeFormat([], { timeZone: tz, hour:'numeric', minute:'2-digit', hour12: !use24h() })
+      .format(new Date());
+  }catch(e){ return ''; }
+}
+/* A user-set label wins; otherwise fall back to the zone's own abbreviation. */
+function tzLabel(tz, custom){
+  if(custom) return custom;
+  try{
+    const part = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName:'short' })
+      .formatToParts(new Date()).find(p=>p.type==='timeZoneName');
+    if(part && part.value) return part.value;
+  }catch(e){}
+  return (tz.split('/').pop() || tz).replace(/_/g,' ');
+}
+/* The calendar date an instant falls on inside a given zone. Needed because a
+   far-away zone can land on a different day than the one the event sits under. */
+function dateInZone(instant, tz){
+  try{
+    const p = Object.fromEntries(
+      new Intl.DateTimeFormat('en-CA', { timeZone: tz, year:'numeric', month:'2-digit', day:'2-digit' })
+        .formatToParts(instant).map(x=>[x.type, x.value]));
+    return `${p.year}-${p.month}-${p.day}`;
+  }catch(e){ return ''; }
+}
+/* "+1" / "−1" when the second zone has already rolled over to another day. */
+function dayShiftMark(dateStr, timeStr, targetTz, sourceTz){
+  const instant = zonedWallToInstant(dateStr, timeStr, sourceTz);
+  if(!instant) return '';
+  const there = dateInZone(instant, targetTz);
+  if(!there || there === dateStr) return '';
+  return there > dateStr ? ' +1' : ' −1';
+}
+/* The one call every calendar view uses to print an event's time. */
+function fmtEventTime(e, opts={}){
+  if(!e.time) return '';
+  const tz = tzSettings();
+  if(!tz.enabled) return fmtTime(e.time);
+  const primary = fmtTimeInZone(e.date, e.time, tz.primary, tz.primary);
+  const secondary = fmtTimeInZone(e.date, e.time, tz.secondary, tz.primary)
+    + dayShiftMark(e.date, e.time, tz.secondary, tz.primary);
+  if(opts.withLabels){
+    return `${primary} ${tzLabel(tz.primary, tz.primaryLabel)} · ${secondary} ${tzLabel(tz.secondary, tz.secondaryLabel)}`;
+  }
+  return `${primary} / ${secondary}`;
+}
+function tzOptionsHtml(selected){
+  let zones = [];
+  try{ zones = (Intl.supportedValuesOf && Intl.supportedValuesOf('timeZone')) || []; }catch(e){}
+  if(!zones.length){
+    zones = ['UTC','America/Los_Angeles','America/Denver','America/Chicago','America/New_York',
+             'America/Sao_Paulo','Europe/London','Europe/Paris','Europe/Berlin','Africa/Cairo',
+             'Asia/Dubai','Asia/Kolkata','Asia/Shanghai','Asia/Tokyo','Australia/Sydney','Pacific/Auckland'];
+  }
+  const dev = deviceZone();
+  if(!zones.includes(dev)) zones.unshift(dev);
+  return zones.map(z=>`<option value="${escapeHtml(z)}" ${z===selected?'selected':''}>${escapeHtml(z.replace(/_/g,' '))}</option>`).join('');
+}
 
 /* ============================= RECURRING EVENTS (series) =============================
    A series is stored as ordinary events that share a `seriesId`, so every existing
@@ -605,6 +742,14 @@ function migrateState(s){
   if(!s.habits.log || typeof s.habits.log !== 'object') s.habits.log = {};
   if(!s.habitMonth) s.habitMonth = monthStr(new Date());
   if(!s.habitPersonId) s.habitPersonId = (s.people && s.people[0] && s.people[0].id) || 'p1';
+  if(s.timeFormat !== '24h') s.timeFormat = '12h';
+  if(!s.timeZones) s.timeZones = { secondaryEnabled:false, primary:'', secondary:'Europe/London', primaryLabel:'', secondaryLabel:'' };
+  if(s.timeZones.secondaryEnabled === undefined) s.timeZones.secondaryEnabled = false;
+  if(s.timeZones.primary === undefined) s.timeZones.primary = '';
+  if(!s.timeZones.secondary) s.timeZones.secondary = 'Europe/London';
+  if(s.timeZones.primaryLabel === undefined) s.timeZones.primaryLabel = '';
+  if(s.timeZones.secondaryLabel === undefined) s.timeZones.secondaryLabel = '';
+  if(typeof s.sleepAfterMin !== 'number' || ![5,10,15,30,60,0].includes(s.sleepAfterMin)) s.sleepAfterMin = 15;
   return s;
 }
 
@@ -768,10 +913,28 @@ document.getElementById('cancelUnlock').addEventListener('click', ()=>{
 
 /* ============================= SCREENSAVER ============================= */
 let idleTimer=null;
-const IDLE_MS = 90000;
+/* 0 means "never on its own" — sleep only when the 🌙 button is pressed. */
+const SLEEP_OPTIONS = [
+  {min:5,  label:'After 5 minutes'},
+  {min:10, label:'After 10 minutes'},
+  {min:15, label:'After 15 minutes'},
+  {min:30, label:'After 30 minutes'},
+  {min:60, label:'After 1 hour'},
+  {min:0,  label:'Only when I press 🌙'}
+];
+function sleepAfterMin(){
+  const v = state && state.sleepAfterMin;
+  return SLEEP_OPTIONS.some(o=>o.min===v) ? v : 15;
+}
+function sleepLabel(min){
+  const o = SLEEP_OPTIONS.find(x=>x.min===min);
+  return o ? o.label : 'After 15 minutes';
+}
 function resetIdleTimer(){
   clearTimeout(idleTimer);
-  idleTimer = setTimeout(enterScreensaver, IDLE_MS);
+  const mins = sleepAfterMin();
+  if(!mins) return;                 // manual-only: no timer at all
+  idleTimer = setTimeout(enterScreensaver, mins * 60000);
 }
 function enterScreensaver(){
   const ss = document.getElementById('screensaver');
@@ -788,7 +951,7 @@ function exitScreensaver(){
 }
 function tickClock(){
   const now = new Date();
-  document.getElementById('ssClock').textContent = now.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  document.getElementById('ssClock').textContent = now.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', hour12: !use24h()});
   document.getElementById('ssDate').textContent = now.toLocaleDateString([], {weekday:'long', month:'long', day:'numeric'});
 }
 function renderUpNext(){
@@ -797,7 +960,7 @@ function renderUpNext(){
   const el = document.getElementById('ssUpNext');
   el.innerHTML = todays.slice(0,5).map(e=>{
     const p = personById(e.personId);
-    return `<div class="ev-pill" style="background:${p?p.color:'#888'}; color:${p?p.text||'#fff':'#fff'};">${p?p.name+': ':''}${escapeHtml(e.title)}${e.time? ' · '+e.time:''}</div>`;
+    return `<div class="ev-pill" style="background:${p?p.color:'#888'}; color:${p?p.text||'#fff':'#fff'};">${p?p.name+': ':''}${escapeHtml(e.title)}${e.time? ' · '+fmtEventTime(e):''}</div>`;
   }).join('') || '<div style="opacity:0.6;font-size:13px;">Nothing else on today\'s calendar 🎉</div>';
 }
 document.getElementById('screensaver').addEventListener('click', exitScreensaver);
@@ -914,6 +1077,20 @@ function renderCalendar(){
          <span>📥 Auto-fill this calendar from Google or Outlook — connect it under <strong>Settings → Open calendar sync</strong>.</span>
        </div>`;
 
+  /* When a second zone is on, a live strip anchors the whole view — month cells
+     are too narrow for two times, so the strip plus the chip tooltips carry it
+     there, while week and day print both inline. */
+  const tz = tzSettings();
+  const zoneStrip = tz.enabled ? `
+    <div class="tz-strip">
+      <span class="tz-one"><span class="tz-name">${escapeHtml(tzLabel(tz.primary, tz.primaryLabel))}</span>
+        <span class="tz-now" id="tzNowPrimary">${fmtNowInZone(tz.primary)}</span></span>
+      <span class="tz-sep">↔</span>
+      <span class="tz-one"><span class="tz-name">${escapeHtml(tzLabel(tz.secondary, tz.secondaryLabel))}</span>
+        <span class="tz-now" id="tzNowSecondary">${fmtNowInZone(tz.secondary)}</span></span>
+      <span class="tz-hint">${state.calView==='month' ? 'Hover an event for both zones' : 'Event times show both zones'}</span>
+    </div>` : '';
+
   return `
     <div class="card">
       <div class="section-title">
@@ -924,6 +1101,7 @@ function renderCalendar(){
         </div>
       </div>
       ${connectedNote}
+      ${zoneStrip}
       <div class="people-row">${filterChips}</div>
       <div class="cal-toolbar">
         <div class="cal-nav">
@@ -1007,7 +1185,7 @@ function monthChipHtml(e){
   /* The cells are too narrow for badges, so who/when/repeating all live in the
      hover tooltip — the chip itself stays as readable as Google's. */
   const tip = escapeHtml(
-    (e.time ? e.time+' · ' : 'All day · ')+e.title+(p ? ' · '+p.name : '')+(e.seriesId ? ' · '+seriesLabel(e) : '')
+    (e.time ? fmtEventTime(e, {withLabels:true})+' · ' : 'All day · ')+e.title+(p ? ' · '+p.name : '')+(e.seriesId ? ' · '+seriesLabel(e) : '')
   );
   if(!e.time){
     return `<div class="month-chip allday" style="background:${color}; color:${text};" data-editevent="${e.id}" title="${tip}">
@@ -1015,7 +1193,7 @@ function monthChipHtml(e){
   }
   return `<div class="month-chip timed" style="--chip-color:${color}; --chip-text:${text};" data-editevent="${e.id}" title="${tip}">
     <span class="chip-dot" style="background:${color};"></span>
-    <span class="chip-time">${e.time}</span>
+    <span class="chip-time">${fmtTime(e.time)}</span>
     <span class="chip-title">${label}</span></div>`;
 }
 function renderWeekGrid(d){
@@ -1025,7 +1203,7 @@ function renderWeekGrid(d){
     const cur = new Date(start); cur.setDate(start.getDate()+i);
     const ds = fmtDate(cur);
     const dayEvents = visibleEvents(ds).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
-    const pills = dayEvents.map(e=>{ const p=personById(e.personId); return `<div class="ev-pill" style="background:${p?p.color:'#999'}; color:${p?p.text||'#fff':'#fff'};" data-editevent="${e.id}">${e.time?e.time+' · ':''}${escapeHtml(e.title)}</div>`; }).join('');
+    const pills = dayEvents.map(e=>{ const p=personById(e.personId); return `<div class="ev-pill" style="background:${p?p.color:'#999'}; color:${p?p.text||'#fff':'#fff'};" data-editevent="${e.id}">${e.time?fmtEventTime(e)+' · ':''}${escapeHtml(e.title)}</div>`; }).join('');
     cols += `<div class="week-col" data-daycell="${ds}">
         <div class="week-col-head">${DOW[cur.getDay()]}<br><span class="mono" style="font-weight:400;">${cur.getDate()}</span></div>
         ${pills}
@@ -1038,7 +1216,7 @@ function renderDayColumns(d){
   const people = state.calFilter==='all' ? state.people : state.people.filter(p=>p.id===state.calFilter);
   const cols = people.map(p=>{
     const evs = state.events.filter(e=>e.date===ds && e.personId===p.id).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
-    const items = evs.map(e=>`<div class="day-event" data-editevent="${e.id}">${e.time?`<span class="t">${e.time}</span>`:''}${escapeHtml(e.title)}</div>`).join('') || `<div style="font-size:12px;color:var(--ink-soft);">No events</div>`;
+    const items = evs.map(e=>`<div class="day-event" data-editevent="${e.id}">${e.time?`<span class="t">${fmtEventTime(e)}</span>`:''}${escapeHtml(e.title)}</div>`).join('') || `<div style="font-size:12px;color:var(--ink-soft);">No events</div>`;
     return `<div class="person-col">
         <div class="person-col-head">${avatarHtml(p,'sm')}${escapeHtml(p.name)}</div>
         ${items}
@@ -1755,6 +1933,7 @@ function mealSlotModal(key){
 
 /* ============================= SETTINGS ============================= */
 function renderSettings(){
+  const tz = tzSettings();
   const people = state.people.map(p=>`
     <div class="list-row">
       ${avatarHtml(p)}
@@ -1770,6 +1949,50 @@ function renderSettings(){
       <div class="add-row">
         <input id="familyLabelInput" value="${escapeHtml(state.familyLabel || 'Family calendar')}" placeholder="Family calendar" maxlength="40">
         <button class="btn btn-primary" id="saveFamilyLabel">Save</button>
+      </div>
+
+      <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
+
+      <h3 style="font-size:15px;">Time format</h3>
+      <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">How event times are shown across the app. Right now ${escapeHtml(fmtTime('14:30'))} — pick the other option to see it as ${escapeHtml(state.timeFormat==='24h' ? '2:30 PM' : '14:30')}.</p>
+      <div class="add-row">
+        <select id="timeFormatSel">
+          <option value="12h" ${state.timeFormat!=='24h'?'selected':''}>12-hour — 2:30 PM</option>
+          <option value="24h" ${state.timeFormat==='24h'?'selected':''}>24-hour — 14:30 (military)</option>
+        </select>
+      </div>
+
+      <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
+
+      <h3 style="font-size:15px;">Second time zone</h3>
+      <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">Show every event in a second zone as well — handy when someone's travelling or family lives away. Week and day views print both times; month view shows the second zone when you hover an event.</p>
+      <div class="field" style="display:flex; align-items:center; gap:8px;">
+        <input type="checkbox" id="tzEnabled" style="width:18px;height:18px;" ${tz.enabled?'checked':''}>
+        <label style="margin:0;">Show a second time zone</label>
+      </div>
+      <div id="tzFields" style="${tz.enabled?'':'display:none;'}">
+        <div class="field"><label>Main zone (how event times are entered)</label>
+          <select id="tzPrimary">${tzOptionsHtml(tz.primary)}</select></div>
+        <div class="field"><label>Main zone label (optional)</label>
+          <input id="tzPrimaryLabel" value="${escapeHtml(state.timeZones.primaryLabel||'')}" placeholder="e.g. Home" maxlength="12"></div>
+        <div class="field"><label>Second zone</label>
+          <select id="tzSecondary">${tzOptionsHtml(tz.secondary)}</select></div>
+        <div class="field"><label>Second zone label (optional)</label>
+          <input id="tzSecondaryLabel" value="${escapeHtml(state.timeZones.secondaryLabel||'')}" placeholder="e.g. Grandma" maxlength="12"></div>
+        <p style="font-size:12.5px; color:var(--ink-soft);">Right now that reads
+          <strong>${escapeHtml(fmtNowInZone(tz.primary))} ${escapeHtml(tzLabel(tz.primary, tz.primaryLabel))}</strong> ·
+          <strong>${escapeHtml(fmtNowInZone(tz.secondary))} ${escapeHtml(tzLabel(tz.secondary, tz.secondaryLabel))}</strong>.
+        </p>
+      </div>
+
+      <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
+
+      <h3 style="font-size:15px;">Sleep mode</h3>
+      <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">How long the screen sits untouched before the clock screensaver takes over. Tap anywhere to wake it, or press 🌙 in the header to sleep right away.</p>
+      <div class="add-row">
+        <select id="sleepAfterSel">
+          ${SLEEP_OPTIONS.map(o=>`<option value="${o.min}" ${sleepAfterMin()===o.min?'selected':''}>${o.label}</option>`).join('')}
+        </select>
       </div>
 
       <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
@@ -2964,6 +3187,40 @@ function attachHandlers(){
   });
   const exportBtn = document.getElementById('exportIcsBtn');
   if(exportBtn) exportBtn.onclick = syncModal;
+  const timeFormatSel = document.getElementById('timeFormatSel');
+  if(timeFormatSel) timeFormatSel.onchange = ()=>{
+    state.timeFormat = timeFormatSel.value === '24h' ? '24h' : '12h';
+    saveState(); render();
+    toast(`Times now show as ${fmtTime('14:30')}.`, 'success');
+  };
+
+  // Second time zone
+  const tzEnabled = document.getElementById('tzEnabled');
+  if(tzEnabled) tzEnabled.onchange = ()=>{
+    state.timeZones.secondaryEnabled = tzEnabled.checked;
+    /* Pin the main zone to the device on first enable, so the label isn't blank. */
+    if(tzEnabled.checked && !state.timeZones.primary) state.timeZones.primary = deviceZone();
+    saveState(); render();
+  };
+  const tzBind = (id, apply)=>{
+    const el = document.getElementById(id);
+    if(!el) return;
+    const handler = ()=>{ apply(el.value.trim()); saveState(); render(); };
+    if(el.tagName === 'SELECT') el.onchange = handler; else el.onblur = handler;
+  };
+  tzBind('tzPrimary',        v=>state.timeZones.primary = v);
+  tzBind('tzSecondary',      v=>state.timeZones.secondary = v);
+  tzBind('tzPrimaryLabel',   v=>state.timeZones.primaryLabel = v);
+  tzBind('tzSecondaryLabel', v=>state.timeZones.secondaryLabel = v);
+
+  // Sleep mode
+  const sleepSel = document.getElementById('sleepAfterSel');
+  if(sleepSel) sleepSel.onchange = ()=>{
+    state.sleepAfterMin = Number(sleepSel.value);
+    saveState();
+    resetIdleTimer();               // apply the new timing immediately
+    toast(`Sleep mode: ${sleepLabel(state.sleepAfterMin).toLowerCase()}.`, 'success');
+  };
 }
 function shiftCal(dir){
   const d = parseDate(state.calDate);
