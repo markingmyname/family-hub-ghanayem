@@ -204,26 +204,35 @@
   .day-event{background:var(--paper-2); border-radius:8px; padding:7px 8px; margin-bottom:6px; font-size:12px; cursor:pointer;}
   .day-event .t{font-family:'JetBrains Mono'; font-size:10px; color:var(--ink-soft); display:block;}
 
-  /* Hour-by-hour "whole day" column that leads the day view */
-  .day-timeline{flex:1.6; min-width:250px;}
-  .tl-allday{display:flex; flex-direction:column; gap:4px; padding-bottom:8px; margin-bottom:6px; border-bottom:1px dashed var(--line);}
-  .tl-row{display:flex; gap:8px; align-items:flex-start; border-top:1px solid var(--line); padding:3px 0; min-height:26px;}
-  .tl-row:first-of-type{border-top:none;}
-  .tl-hour{
+  /* Day view: one grid so every column's 9am sits on the same line */
+  .day-grid-wrap{overflow-x:auto; border:1px solid var(--line); border-radius:10px; background:#fff;}
+  .day-grid{display:grid; min-width:max-content;}
+  .dg-corner{position:sticky; left:0; z-index:3; background:var(--paper-2); border-bottom:2px solid var(--line);}
+  .dg-head{
+    display:flex; align-items:center; gap:6px; font-weight:700; font-size:13px;
+    padding:9px 10px; background:var(--paper-2); border-bottom:2px solid var(--line);
+    border-left:1px solid var(--line); white-space:nowrap;
+  }
+  /* The hour rail stays put while the columns scroll sideways. */
+  .dg-hour{
+    position:sticky; left:0; z-index:2; background:#fff;
     font-family:'JetBrains Mono'; font-size:10.5px; color:var(--ink-soft);
-    width:52px; flex-shrink:0; padding-top:4px; text-align:right;
+    padding:6px 8px 0 0; text-align:right; border-top:1px solid var(--line);
+    box-shadow:1px 0 0 var(--line);
   }
-  .tl-row.is-now{background:color-mix(in srgb, var(--mustard) 14%, transparent); border-radius:6px;}
-  .tl-row.is-now .tl-hour{color:#8a6400; font-weight:700;}
-  .tl-events{flex:1; min-width:0; display:flex; flex-direction:column; gap:4px;}
-  .tl-pill{
-    border-radius:7px; padding:5px 8px; font-size:12px; font-weight:600;
-    cursor:pointer; min-width:0; overflow-wrap:anywhere;
+  .dg-cell{border-top:1px solid var(--line); border-left:1px solid var(--line); padding:4px; min-height:34px; display:flex; flex-direction:column; gap:4px; min-width:0;}
+  .dg-hour.is-now, .dg-cell.is-now{background:color-mix(in srgb, var(--mustard) 13%, #fff);}
+  .dg-hour.is-now{color:#8a6400; font-weight:700;}
+  .dg-allday-label{color:var(--ink); font-weight:700;}
+  .dg-cell.dg-allday{background:var(--paper-2);}
+  .dg-pill{
+    border-radius:7px; padding:4px 7px; font-size:12px; font-weight:600;
+    cursor:pointer; min-width:0; overflow-wrap:anywhere; line-height:1.3;
   }
-  .tl-pill .tl-time{font-family:'JetBrains Mono'; font-size:10px; opacity:0.85; display:block;}
+  .dg-pill .dg-time{font-family:'JetBrains Mono'; font-size:9.5px; opacity:0.85; display:block;}
   @media(max-width:640px){
-    .day-timeline{min-width:210px;}
-    .tl-hour{width:44px;}
+    .dg-head{font-size:12px; padding:7px 8px;}
+    .dg-pill{font-size:11px;}
   }
 
   /* ---------- Chores ---------- */
@@ -1470,74 +1479,64 @@ function renderWeekGrid(d){
   }
   return `<div class="week-grid">${cols}</div>`;
 }
-/* The day view leads with an hour-by-hour schedule of everything on that date,
-   so the whole day reads at a glance before you narrow down to one person. */
-function renderDayTimeline(ds, events){
-  const timed = events.filter(e=>e.time).sort((a,b)=>a.time.localeCompare(b.time));
-  const allDay = events.filter(e=>!e.time);
-  /* A sensible waking window by default, stretched to cover anything outside it
-     so an early flight or a late shift is never hidden. */
+
+/* The day view is one grid: hours down the side, a "Whole day" column plus one
+   per person across the top. Building it as a single CSS grid rather than
+   independent columns is what keeps every person's 9am on the same line. */
+function renderDayColumns(d){
+  const ds = fmtDate(d);
+  const dayEvents = state.events.filter(e=>e.date===ds).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
+  const visible = dayEvents.filter(e=>eventMatchesFilter(e, state.calFilter));
+  const people = state.calFilter==='all' ? state.people : state.people.filter(p=>p.id===state.calFilter);
+
+  /* One hour window shared by every column, so the rows line up. Defaults to a
+     waking day and stretches to cover anything outside it. */
   let startH = 7, endH = 21;
-  timed.forEach(e=>{
+  visible.filter(e=>e.time).forEach(e=>{
     const h = parseInt(e.time.slice(0,2), 10);
     if(!isNaN(h)){ startH = Math.min(startH, h); endH = Math.max(endH, h); }
   });
   const isToday = ds === todayStr();
   const nowH = new Date().getHours();
-
   const hourLabel = h => {
     if(use24h()) return String(h).padStart(2,'0')+':00';
-    const suffix = h < 12 ? 'AM' : 'PM';
-    return `${h % 12 === 0 ? 12 : h % 12} ${suffix}`;
+    return `${h % 12 === 0 ? 12 : h % 12} ${h < 12 ? 'AM' : 'PM'}`;
   };
-  const rows = [];
-  for(let h = startH; h <= endH; h++){
-    const inHour = timed.filter(e=>parseInt(e.time.slice(0,2),10) === h);
-    rows.push(`<div class="tl-row ${isToday && h===nowH ? 'is-now' : ''}">
-        <div class="tl-hour">${hourLabel(h)}</div>
-        <div class="tl-events">${inHour.map(e=>`
-          <div class="tl-pill" data-editevent="${e.id}" style="background:${eventColor(e)}; color:${eventTextColor(e)};" title="${escapeHtml(eventPeopleLabel(e))}">
-            <span class="tl-time">${fmtEventTime(e)}</span>            <span class="tl-title">${escapeHtml(e.title)}</span>
-          </div>`).join('')}</div>
-      </div>`);
-  }
-  return `<div class="person-col day-timeline">
-      <div class="person-col-head"><span class="dot" style="background:var(--mustard);"></span>Whole day</div>
-      ${allDay.length ? `<div class="tl-allday">${allDay.map(e=>`
-        <div class="tl-pill" data-editevent="${e.id}" style="background:${eventColor(e)}; color:${eventTextColor(e)};" title="${escapeHtml(eventPeopleLabel(e))}">
-          <span class="tl-title">${escapeHtml(e.title)}</span>
-        </div>`).join('')}</div>` : ''}
-      ${timed.length ? rows.join('') : `<div style="font-size:12px;color:var(--ink-soft); padding:6px 2px;">Nothing scheduled by time.</div>`}
+
+  /* Column 1 is everything; then the family catch-all; then each person. */
+  const columns = [
+    { key:'all', label:'Whole day', dot:'var(--mustard)', match:()=>true },
+    ...(visible.some(isFamilyEvent) ? [{ key:'family', label:familyLabel(), dot:'var(--board)', match:isFamilyEvent }] : []),
+    ...people.map(p=>({ key:p.id, label:p.name, avatar:p, match:e=>eventPersonIds(e).includes(p.id) }))
+  ];
+
+  const pill = (e, withTime)=>`<div class="dg-pill" data-editevent="${e.id}"
+      style="background:${eventColor(e)}; color:${eventTextColor(e)};" title="${escapeHtml(eventPeopleLabel(e))}">
+      ${withTime && e.time ? `<span class="dg-time">${fmtEventTime(e)}</span>` : ''}
+      <span class="dg-title">${escapeHtml(e.title)}</span>
     </div>`;
-}
 
-function renderDayColumns(d){
-  const ds = fmtDate(d);
-  const dayEvents = state.events.filter(e=>e.date===ds).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
-  const people = state.calFilter==='all' ? state.people : state.people.filter(p=>p.id===state.calFilter);
-  const item = e=>`<div class="day-event" data-editevent="${e.id}">${e.time?`<span class="t">${fmtEventTime(e)}</span>`:''}${escapeHtml(e.title)}</div>`;
-  const emptyNote = `<div style="font-size:12px;color:var(--ink-soft);">No events</div>`;
+  let cells = `<div class="dg-corner"></div>` + columns.map(c=>`
+    <div class="dg-head">${c.avatar ? avatarHtml(c.avatar,'sm') : `<span class="dot" style="background:${c.dot};"></span>`}${escapeHtml(c.label)}</div>`).join('');
 
-  /* Whole-family events get their own column instead of being repeated down
-     every person's list — the same idea as the catch-all filter chip. */
-  const familyEvents = dayEvents.filter(isFamilyEvent);
-  const familyCol = familyEvents.length ? `<div class="person-col">
-      <div class="person-col-head"><span class="dot" style="background:var(--board);"></span>${escapeHtml(familyLabel())}</div>
-      ${familyEvents.map(item).join('')}
-    </div>` : '';
+  /* All-day band sits above the hours, same as every calendar app. */
+  const allDay = visible.filter(e=>!e.time);
+  if(allDay.length){
+    cells += `<div class="dg-hour dg-allday-label">All day</div>` + columns.map(c=>`
+      <div class="dg-cell dg-allday">${allDay.filter(c.match).map(e=>pill(e,false)).join('')}</div>`).join('');
+  }
 
-  const cols = people.map(p=>{
-    /* Explicit assignments only — a shared event lands in each person's column. */
-    const evs = dayEvents.filter(e=>eventPersonIds(e).includes(p.id));
-    return `<div class="person-col">
-        <div class="person-col-head">${avatarHtml(p,'sm')}${escapeHtml(p.name)}</div>
-        ${evs.map(item).join('') || emptyNote}
-      </div>`;
-  }).join('');
-  /* The hour-by-hour column comes first and honours the current filter, so the
-     whole day is visible up front and narrows when you pick a person. */
-  const timeline = renderDayTimeline(ds, dayEvents.filter(e=>eventMatchesFilter(e, state.calFilter)));
-  return `<div class="day-columns">${timeline}${familyCol}${cols}</div>`;
+  for(let h = startH; h <= endH; h++){
+    const nowCls = isToday && h===nowH ? 'is-now' : '';
+    const inHour = visible.filter(e=>e.time && parseInt(e.time.slice(0,2),10) === h);
+    cells += `<div class="dg-hour ${nowCls}">${hourLabel(h)}</div>` + columns.map(c=>`
+      <div class="dg-cell ${nowCls}">${inHour.filter(c.match).map(e=>pill(e,true)).join('')}</div>`).join('');
+  }
+
+  const template = `70px repeat(${columns.length}, minmax(150px, 1fr))`;
+  return `<div class="day-grid-wrap">
+      <div class="day-grid" style="grid-template-columns:${template};">${cells}</div>
+    </div>`;
 }
 
 function connectedCalServices(){
