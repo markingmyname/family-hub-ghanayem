@@ -623,6 +623,7 @@ function defaultState(){
     },
     todoView: { listId:'all', sort:'manual', showCompleted:false, collapsed:{} },
     completedOpen: { chores:false, todos:false, habits:false },
+    autoRemoveChecked: false,
     outlook: { clientId: '' },
     google: { clientId: '640349356853-ljl8ljpfpktegj49f9f4kr1kkb6fngv2.apps.googleusercontent.com', calendarId: 'ac3601938b78b11f2849f0a53d25e7047d4c115a510dd7d02464bc8a72b60a85@group.calendar.google.com', apiKey: '', consented: false },
     pin: '1234',
@@ -947,6 +948,7 @@ function migrateState(s){
   if(!s.todoView) s.todoView = { listId:'all', sort:'manual', showCompleted:false, collapsed:{} };
   if(!s.todoView.collapsed) s.todoView.collapsed = {};
   if(!s.completedOpen) s.completedOpen = { chores:false, todos:false, habits:false };
+  if(typeof s.autoRemoveChecked !== 'boolean') s.autoRemoveChecked = false;
   if(!s.habitMonth) s.habitMonth = monthStr(new Date());
   if(!s.habitPersonId) s.habitPersonId = (s.people && s.people[0] && s.people[0].id) || 'p1';
   if(s.timeFormat !== '24h') s.timeFormat = '12h';
@@ -1019,13 +1021,22 @@ function pointsFor(id){ return state.points[id] || 0; }
    block at the foot of their page, so the working list only ever shows what's
    still outstanding. */
 function completedIsOpen(key){ return !!(state.completedOpen && state.completedOpen[key]); }
+function autoRemoveOn(){ return !!state.autoRemoveChecked; }
+/* With auto-remove on there is never anything to clear, so the button and the
+   drawer both stand down rather than sitting there permanently empty. */
 function completedToggleHtml(key, count){
+  if(autoRemoveOn()) return '';
   return `<button class="btn btn-ghost" data-completedtoggle="${key}" style="font-size:12px;">
       ${completedIsOpen(key) ? 'Hide' : 'Show'} completed${count?` (${count})`:''}
     </button>`;
 }
+function completedClearHtml(key, count){
+  if(autoRemoveOn() || !count) return '';
+  const label = key === 'habits' ? 'Clear today\'s ticks' : 'Remove all checked';
+  return `<button class="btn btn-ghost" data-completedclear="${key}" style="font-size:12px;">${label} (${count})</button>`;
+}
 function completedSectionHtml(key, count, rowsHtml, emptyNote){
-  if(!count) return '';
+  if(autoRemoveOn() || !count) return '';
   const open = completedIsOpen(key);
   return `<div class="done-drawer">
       <div class="done-drawer-head" data-completedtoggle="${key}">
@@ -1035,6 +1046,34 @@ function completedSectionHtml(key, count, rowsHtml, emptyNote){
       </div>
       ${open ? `<div class="done-drawer-body">${rowsHtml || `<div class="done-empty">${emptyNote||'Nothing completed yet.'}</div>`}</div>` : ''}
     </div>`;
+}
+
+/* Removing checked items. Chores and to-dos are deleted outright; a habit is an
+   ongoing thing rather than a one-off, so "clearing" it un-ticks today instead
+   of deleting the habit and wiping its history. */
+function clearCheckedFor(key){
+  if(key === 'chores'){
+    const gone = state.chores.filter(c=>c.done).length;
+    state.chores = state.chores.filter(c=>!c.done);
+    return { gone, noun: gone===1 ? 'chore' : 'chores' };
+  }
+  if(key === 'todos'){
+    const doneIds = new Set(state.todos.items.filter(t=>t.done).map(t=>t.id));
+    const gone = doneIds.size;
+    state.todos.items = state.todos.items.filter(t=>!doneIds.has(t.id) && !doneIds.has(t.parentId));
+    return { gone, noun: gone===1 ? 'to-do' : 'to-dos' };
+  }
+  /* Habits: un-tick everything done today and hand the points back. */
+  const now = new Date();
+  let gone = 0;
+  state.habits.items.forEach(h=>{
+    if(habitDone(h, now)){
+      delete state.habits.log[habitLogKey(h, now)];
+      addPoints(h.personId, -(h.points||0));
+      gone++;
+    }
+  });
+  return { gone, noun: gone===1 ? 'tick' : 'ticks' };
 }
 function addPoints(id, n){ state.points[id] = pointsFor(id) + n; }
 function budgetFor(id){ return state.budget.transactions.filter(t=>t.personId===id).reduce((sum,t)=>sum+t.amount,0); }
@@ -1882,6 +1921,7 @@ function renderChores(){
         <h2>Chore chart</h2>
         <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
           <span style="font-size:12px;color:var(--ink-soft);">Tap the checkbox when a chore's done</span>
+          ${completedClearHtml('chores', doneChores.length)}
           ${completedToggleHtml('chores', doneChores.length)}
         </div>
       </div>
@@ -2102,6 +2142,7 @@ function renderHabits(){
       <div class="section-title">
         <h2>Habit tracker</h2>
         <div style="display:flex; gap:8px;">
+          ${completedClearHtml('habits', doneToday.length)}
           ${completedToggleHtml('habits', doneToday.length)}
           <button class="btn btn-ghost" id="addWeeklyHabitBtn">+ Weekly habit</button>
           <button class="btn btn-mustard" id="addDailyHabitBtn">+ Daily habit</button>
@@ -2345,8 +2386,8 @@ function renderTodos(){
               ${TODO_SORTS.map(s=>`<option value="${s.key}" ${view.sort===s.key?'selected':''}>${s.label}</option>`).join('')}
             </select>
             <span class="spacer"></span>
+            ${completedClearHtml('todos', doneTodos.length)}
             ${completedToggleHtml('todos', doneTodos.length)}
-            <button class="btn btn-ghost" id="todoClearCompleted" style="font-size:12px;">Clear completed</button>
           </div>
           ${body}
           <div class="todo-add">
@@ -2540,6 +2581,9 @@ function completeTodo(t){
     t.doneAt = todayStr();
     t.awardedTo = personId || null;
     if(personId && t.points) addPoints(personId, t.points);
+    /* Points land first, then the item goes — along with its sub-tasks, which
+       have nothing to hang off once the parent is gone. */
+    if(autoRemoveOn()) state.todos.items = state.todos.items.filter(x=>x.id!==t.id && x.parentId!==t.id);
     await saveState(); render();
     if(personId && t.points) toast(`${personById(personId).name} earned ${t.points} point${t.points===1?'':'s'} ⭐`, 'success');
   };
@@ -2899,6 +2943,16 @@ function renderSettings(){
           <strong>${escapeHtml(fmtNowInZone(tz.secondary))} ${escapeHtml(tzLabel(tz.secondary, tz.secondaryLabel))}</strong>.
         </p>
       </div>
+
+      <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
+
+      <h3 style="font-size:15px;">Checked items</h3>
+      <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">Chores and to-dos normally drop into a Completed drawer at the foot of their page, where you can review them and clear them with <strong>Remove all checked</strong>. Turn this on to have them disappear the moment they're ticked instead.</p>
+      <div class="field" style="display:flex; align-items:center; gap:8px;">
+        <input type="checkbox" id="autoRemoveChecked" style="width:18px;height:18px;" ${state.autoRemoveChecked?'checked':''}>
+        <label style="margin:0;">Remove checked items automatically</label>
+      </div>
+      <p style="font-size:12.5px; color:var(--ink-soft);">Points are still awarded either way — ticking is what earns them. Habits are unaffected: ticking one is the tracking, so the grid keeps its history and the button only clears today's ticks.</p>
 
       <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
 
@@ -3992,6 +4046,14 @@ function attachHandlers(){
     state.completedOpen[key] = !state.completedOpen[key];
     saveState(); render();
   });
+  document.querySelectorAll('[data-completedclear]').forEach(el=>el.onclick = (e)=>{
+    e.stopPropagation();
+    requireUnlock(async ()=>{
+      const { gone, noun } = clearCheckedFor(el.dataset.completedclear);
+      await saveState(); render();
+      if(gone) toast(`Removed ${gone} ${noun}.`, 'success');
+    });
+  });
   // Calendar
   const addEventBtn = document.getElementById('addEventBtn');
   if(addEventBtn) addEventBtn.onclick = ()=>eventModal(null, state.calDate);
@@ -4022,6 +4084,9 @@ function attachHandlers(){
     const wasDone = c.done;
     c.done = !wasDone;
     addPoints(c.personId, wasDone ? -c.points : c.points);
+    /* Points are awarded first, then the chore disappears — checking it off is
+       still what earns them. */
+    if(!wasDone && autoRemoveOn()) state.chores = state.chores.filter(x=>x.id!==c.id);
     saveState(); render();
   });
   document.querySelectorAll('[data-delchore]').forEach(b=>b.onclick = ()=>requireUnlock(()=>{
@@ -4112,16 +4177,6 @@ function attachHandlers(){
   });
   const todoSort = document.getElementById('todoSort');
   if(todoSort) todoSort.onchange = ()=>{ todoView().sort = todoSort.value; saveState(); render(); };
-  const todoShowCompleted = document.getElementById('todoShowCompleted');
-  if(todoShowCompleted) todoShowCompleted.onchange = ()=>{
-    todoView().showCompleted = todoShowCompleted.checked; saveState(); render();
-  };  const todoClear = document.getElementById('todoClearCompleted');
-  if(todoClear) todoClear.onclick = ()=>requireUnlock(async ()=>{
-    const before = state.todos.items.length;
-    state.todos.items = state.todos.items.filter(t=>!t.done);
-    await saveState(); render();
-    toast(`Cleared ${before - state.todos.items.length} completed to-do${before-state.todos.items.length===1?'':'s'}.`, 'success');
-  });
   document.querySelectorAll('[data-todotoggle]').forEach(b=>b.onclick = ()=>{
     const t = state.todos.items.find(x=>x.id===b.dataset.todotoggle);
     if(!t) return;
@@ -4316,6 +4371,16 @@ function attachHandlers(){
     saveState();
     resetIdleTimer();               // apply the new timing immediately
     toast(`Sleep mode: ${sleepLabel(state.sleepAfterMin).toLowerCase()}.`, 'success');
+  };
+
+  // Checked items
+  const autoRemove = document.getElementById('autoRemoveChecked');
+  if(autoRemove) autoRemove.onchange = ()=>{
+    state.autoRemoveChecked = autoRemove.checked;
+    saveState(); render();
+    toast(autoRemove.checked
+      ? 'Checked items will now disappear straight away.'
+      : 'Checked items will collect in the Completed drawer.', 'success');
   };
 }
 function shiftCal(dir){
