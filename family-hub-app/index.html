@@ -141,12 +141,38 @@
   .view-toggle button.active{background:var(--board); color:#fff;}
   .month-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:6px;}
   .dow{text-align:center; font-size:11px; font-weight:700; color:var(--ink-soft); padding-bottom:4px; text-transform:uppercase;}
-  .day-cell{background:#fff; border:1px solid var(--line); border-radius:10px; min-height:74px; padding:6px; cursor:pointer; position:relative;}
-  .day-cell.other-month{opacity:0.35;}
+  .day-cell{background:#fff; border:1px solid var(--line); border-radius:10px; min-height:112px; padding:6px; cursor:pointer; position:relative; display:flex; flex-direction:column; overflow:hidden;}
+  .day-cell.other-month{opacity:0.45;}
   .day-cell.today{border:2px solid var(--mustard);}
-  .day-num{font-family:'JetBrains Mono'; font-size:12px; font-weight:700;}
-  .day-dots{display:flex; flex-wrap:wrap; gap:3px; margin-top:5px;}
-  .ev-dot{width:7px; height:7px; border-radius:50%;}
+  .day-num{font-family:'JetBrains Mono'; font-size:12px; font-weight:700; flex-shrink:0;}
+  .day-cell.today .day-num{
+    background:var(--mustard); color:#3a2a05; border-radius:999px;
+    width:20px; height:20px; display:inline-flex; align-items:center; justify-content:center;
+  }
+  /* Google-style agenda chips: a solid bar for all-day, a dot + time for timed. */
+  .day-events{display:flex; flex-direction:column; gap:2px; margin-top:4px; min-width:0;}
+  .month-chip{
+    display:flex; align-items:center; gap:4px; font-size:11px; font-weight:600;
+    padding:2px 5px; border-radius:5px; cursor:pointer; min-width:0;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.45;
+  }
+  .month-chip .chip-title{overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;}
+  .month-chip .chip-time{font-family:'JetBrains Mono'; font-size:10px; font-weight:700; opacity:0.75; flex-shrink:0;}
+  .month-chip .chip-dot{width:7px; height:7px; border-radius:50%; flex-shrink:0;}
+  .month-chip.timed{background:transparent; color:var(--ink);}
+  .month-chip.timed:hover{background:var(--paper-2);}
+  .month-chip.allday:hover{filter:brightness(1.08);}
+  .day-more{font-size:10.5px; font-weight:700; color:var(--ink-soft); padding:1px 5px; margin-top:1px;}
+  @media(max-width:640px){
+    .month-grid{gap:3px;}
+    .day-cell{min-height:94px; padding:4px; border-radius:8px;}
+    .month-chip{font-size:10px; padding:1px 4px; gap:3px;}
+    /* Cells are only ~50px wide here, so the dot and time are dropped and the
+       chip becomes a solid colour bar — every pixel goes to the title. */
+    .month-chip .chip-time, .month-chip .chip-dot{display:none;}
+    .month-chip.timed{background:var(--chip-color); color:var(--chip-text,#fff);}
+    .day-more{font-size:10px; padding:1px 4px;}
+  }
   .week-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:8px;}
   .week-col{background:#fff; border:1px solid var(--line); border-radius:10px; padding:8px; min-height:140px;}
   .week-col-head{font-size:12px; font-weight:700; margin-bottom:6px; text-align:center;}
@@ -365,6 +391,130 @@ function todayStr(){ const d=new Date(); return fmtDate(d); }
 function fmtDate(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function parseDate(s){ const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); }
 function uid(){ return Math.random().toString(36).slice(2,9); }
+
+/* ============================= RECURRING EVENTS (series) =============================
+   A series is stored as ordinary events that share a `seriesId`, so every existing
+   render path (month/week/day, screensaver, ICS export) keeps working untouched.
+
+   Sync model: the series is pushed to Google/Outlook as ONE recurring event, and the
+   provider's master-event id is stored on every local instance (`seriesGoogleId` /
+   `seriesGraphId`). When the next pull expands that series back into instances, each
+   one is matched to its local twin by (master id + date) and adopts the instance id —
+   so a series never round-trips into duplicates. */
+const RECUR_MAX = 200;      // hard cap on generated occurrences
+const RECUR_MAX_YEARS = 3;  // how far ahead an open-ended rule runs
+const RECUR_ABS_YEARS = 25; // absolute far-future backstop
+const RECUR_LABELS = {
+  daily:'Every day', weekdays:'Every weekday', weekly:'Every week',
+  biweekly:'Every 2 weeks', monthly:'Every month', yearly:'Every year'
+};
+const GRAPH_DOW = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+
+/* Same month/day in a later month — null when that day doesn't exist (Feb 31). */
+function nthMonthFrom(start, n){
+  const probe = new Date(start.getFullYear(), start.getMonth()+n, 1);
+  const day = start.getDate();
+  const lastDay = new Date(probe.getFullYear(), probe.getMonth()+1, 0).getDate();
+  return day > lastDay ? null : new Date(probe.getFullYear(), probe.getMonth(), day);
+}
+function nthYearFrom(start, n){
+  const y = start.getFullYear()+n, m = start.getMonth(), day = start.getDate();
+  const lastDay = new Date(y, m+1, 0).getDate();
+  return day > lastDay ? null : new Date(y, m, day);
+}
+
+/* Expands a rule into concrete YYYY-MM-DD strings. The start date is always the
+   first occurrence (RFC 5545 DTSTART), even when it doesn't match the rule. */
+function expandRecurrence(startStr, rec){
+  const out = [startStr];
+  if(!startStr || !rec || !rec.freq || rec.freq==='none') return out;
+  const start = parseDate(startStr);
+  if(isNaN(start)) return out;
+
+  /* An end date before the start means the series is just the one event —
+     it must not fall through and be treated as open-ended. */
+  const until = rec.until || null;
+  if(until && until < startStr) return out;
+
+  const maxCount = Math.min(rec.count || RECUR_MAX, RECUR_MAX);
+  /* A count is honoured on its own terms (10 yearly events = 10 years). Only
+     open-ended rules get squeezed into the short look-ahead window. */
+  const horizon = new Date(start);
+  horizon.setFullYear(horizon.getFullYear() + ((rec.count || until) ? RECUR_ABS_YEARS : RECUR_MAX_YEARS));
+
+  const cursor = new Date(start);
+  let step = 0, bail = false;
+
+  for(let guard=0; guard<5000 && !bail; guard++){
+    if(!until && out.length >= maxCount) break;
+    let next = null;
+    switch(rec.freq){
+      case 'daily':    cursor.setDate(cursor.getDate()+1); next = new Date(cursor); break;
+      case 'weekdays': do { cursor.setDate(cursor.getDate()+1); } while(cursor.getDay()===0 || cursor.getDay()===6);
+                       next = new Date(cursor); break;
+      case 'weekly':   cursor.setDate(cursor.getDate()+7);  next = new Date(cursor); break;
+      case 'biweekly': cursor.setDate(cursor.getDate()+14); next = new Date(cursor); break;
+      case 'monthly':  next = nthMonthFrom(start, ++step); break;
+      case 'yearly':   next = nthYearFrom(start, ++step);  break;
+      default: bail = true;
+    }
+    if(bail) break;
+    if(!next){
+      /* Skipped month/year (e.g. the 31st in February) — keep walking, but stop
+         once even the skipped candidates are past the horizon. */
+      const probe = rec.freq==='monthly'
+        ? new Date(start.getFullYear(), start.getMonth()+step, 1)
+        : new Date(start.getFullYear()+step, start.getMonth(), 1);
+      if(probe > horizon) break;
+      continue;
+    }
+    if(next > horizon) break;
+    const ds = fmtDate(next);
+    if(until && ds > until) break;
+    out.push(ds);
+    if(out.length >= RECUR_MAX) break;
+  }
+  return out;
+}
+
+/* COUNT is used (never UNTIL) so the provider's series length always matches the
+   instances generated locally — no timezone edge cases on the UNTIL boundary. */
+function recurToRRule(freq, count){
+  const c = ';COUNT='+count;
+  switch(freq){
+    case 'daily':    return 'RRULE:FREQ=DAILY'+c;
+    case 'weekdays': return 'RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR'+c;
+    case 'weekly':   return 'RRULE:FREQ=WEEKLY'+c;
+    case 'biweekly': return 'RRULE:FREQ=WEEKLY;INTERVAL=2'+c;
+    case 'monthly':  return 'RRULE:FREQ=MONTHLY'+c;
+    case 'yearly':   return 'RRULE:FREQ=YEARLY'+c;
+    default: return null;
+  }
+}
+function recurToGraph(startStr, freq, count, tz){
+  if(!freq || freq==='none') return null;
+  const d = parseDate(startStr);
+  let pattern;
+  switch(freq){
+    case 'daily':    pattern = {type:'daily', interval:1}; break;
+    case 'weekdays': pattern = {type:'weekly', interval:1, daysOfWeek:['monday','tuesday','wednesday','thursday','friday']}; break;
+    case 'weekly':   pattern = {type:'weekly', interval:1, daysOfWeek:[GRAPH_DOW[d.getDay()]]}; break;
+    case 'biweekly': pattern = {type:'weekly', interval:2, daysOfWeek:[GRAPH_DOW[d.getDay()]]}; break;
+    case 'monthly':  pattern = {type:'absoluteMonthly', interval:1, dayOfMonth:d.getDate()}; break;
+    case 'yearly':   pattern = {type:'absoluteYearly', interval:1, dayOfMonth:d.getDate(), month:d.getMonth()+1}; break;
+    default: return null;
+  }
+  return { pattern, range:{ type:'numbered', startDate:startStr, numberOfOccurrences:count, recurrenceTimeZone:tz } };
+}
+function seriesLabel(e){
+  if(!e || !e.seriesId) return '';
+  const rule = e.seriesRule || {};
+  const base = RECUR_LABELS[rule.freq] || 'Repeating';
+  return rule.count ? `${base} · ${rule.count} events` : base;
+}
+function seriesMembers(seriesId){
+  return state.events.filter(e=>e.seriesId===seriesId).sort((a,b)=>a.date.localeCompare(b.date));
+}
 
 function migrateState(s){
   if(!s.budget) s.budget = { transactions: [] };
@@ -689,8 +839,7 @@ function renderCalendar(){
          <button class="btn btn-ghost" id="calSyncManage" style="font-size:12px; padding:5px 10px;">Manage</button>
        </div>`
     : `<div style="background:var(--paper-2); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:12px; font-size:13px; display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
-         <span>📥 Auto-fill this calendar from Google or Outlook — sign in once and your events appear instantly.</span>
-         <button class="btn btn-mustard" id="calConnectBtn" style="font-size:13px;">Connect a calendar</button>
+         <span>📥 Auto-fill this calendar from Google or Outlook — connect it under <strong>Settings → Open calendar sync</strong>.</span>
        </div>`;
 
   return `
@@ -727,22 +876,75 @@ function renderMonthGrid(d){
   const year=d.getFullYear(), month=d.getMonth();
   const first = new Date(year, month, 1);
   const gridStart = startOfWeek(first);
+  const cap = monthChipCap();
   let cells='';
   DOW.forEach(w=>cells+=`<div class="dow">${w}</div>`);
-  for(let i=0;i<42;i++){
+  /* Six rows only when the month actually needs them — otherwise the grid ends
+     with a dead week of greyed-out cells. */
+  const weeks = monthWeekCount(first);
+  for(let i=0;i<weeks*7;i++){
     const cur = new Date(gridStart); cur.setDate(gridStart.getDate()+i);
     const ds = fmtDate(cur);
     const inMonth = cur.getMonth()===month;
     const isToday = ds===todayStr();
-    const dayEvents = visibleEvents(ds);
-    const dots = dayEvents.slice(0,6).map(e=>{ const p=personById(e.personId); return `<span class="ev-dot" style="background:${p?p.color:'#999'}"></span>`; }).join('');
+    const dayEvents = visibleEvents(ds).sort(byStartTime);
+    /* Keep one slot for the "+N more" line rather than hiding a single event behind it. */
+    const shownCount = dayEvents.length > cap ? cap-1 : dayEvents.length;
+    const chips = dayEvents.slice(0, shownCount).map(e=>monthChipHtml(e)).join('');
+    const hidden = dayEvents.length - shownCount;
+    const more = hidden > 0 ? `<div class="day-more">+${hidden} more</div>` : '';
     cells += `<div class="day-cell ${inMonth?'':'other-month'} ${isToday?'today':''}" data-daycell="${ds}">
         <span class="day-num">${cur.getDate()}</span>
-        <div class="day-dots">${dots}</div>
+        <div class="day-events">${chips}${more}</div>
       </div>`;
-    if(i===41) break;
   }
   return `<div class="month-grid">${cells}</div>`;
+}
+function byStartTime(a,b){
+  /* All-day events sit above timed ones, the way Google stacks them. */
+  if(!a.time && b.time) return -1;
+  if(a.time && !b.time) return 1;
+  return (a.time||'').localeCompare(b.time||'') || a.title.localeCompare(b.title);
+}function monthWeekCount(firstOfMonth){
+  const lead = firstOfMonth.getDay();
+  const days = new Date(firstOfMonth.getFullYear(), firstOfMonth.getMonth()+1, 0).getDate();
+  return Math.ceil((lead + days) / 7);
+}
+/* How many chips fit before the cell needs a "+N more" — recalculated on resize. */
+function monthChipCap(){
+  return window.innerWidth < 900 ? 3 : 4;
+}
+/* Rotating a tablet changes how many chips fit, so re-render — but only when the
+   cap actually crosses a breakpoint, not on every resize tick. */
+let lastChipCap = monthChipCap();
+let chipCapTimer = null;
+window.addEventListener('resize', ()=>{
+  clearTimeout(chipCapTimer);
+  chipCapTimer = setTimeout(()=>{
+    const cap = monthChipCap();
+    if(cap === lastChipCap) return;
+    lastChipCap = cap;
+    if(activeTab==='calendar' && state.calView==='month') render();
+  }, 200);
+});
+function monthChipHtml(e){
+  const p = personById(e.personId);
+  const color = p ? p.color : '#8a8a8a';
+  const text = p && p.text ? p.text : '#fff';
+  const label = escapeHtml(e.title);
+  /* The cells are too narrow for badges, so who/when/repeating all live in the
+     hover tooltip — the chip itself stays as readable as Google's. */
+  const tip = escapeHtml(
+    (e.time ? e.time+' · ' : 'All day · ')+e.title+(p ? ' · '+p.name : '')+(e.seriesId ? ' · '+seriesLabel(e) : '')
+  );
+  if(!e.time){
+    return `<div class="month-chip allday" style="background:${color}; color:${text};" data-editevent="${e.id}" title="${tip}">
+      <span class="chip-title">${label}</span></div>`;
+  }
+  return `<div class="month-chip timed" style="--chip-color:${color}; --chip-text:${text};" data-editevent="${e.id}" title="${tip}">
+    <span class="chip-dot" style="background:${color};"></span>
+    <span class="chip-time">${e.time}</span>
+    <span class="chip-title">${label}</span></div>`;
 }
 function renderWeekGrid(d){
   const start = startOfWeek(d);
@@ -775,28 +977,67 @@ function renderDayColumns(d){
 
 function connectedCalServices(){
   const s = [];
-  if(googleSync.isConnected()) s.push({key:'google', label:'Google Calendar', idField:'googleId', api:googleSync});
-  if(outlookSync.isConnected()) s.push({key:'outlook', label:'Outlook', idField:'graphId', api:outlookSync});
+  if(googleSync.isConnected()) s.push({key:'google', label:'Google Calendar', idField:'googleId', seriesField:'seriesGoogleId', api:googleSync});
+  if(outlookSync.isConnected()) s.push({key:'outlook', label:'Outlook', idField:'graphId', seriesField:'seriesGraphId', api:outlookSync});
   return s;
 }
 
 function eventModal(existing, presetDate){
   const isEdit = !!existing;
   const ev = existing || {id:null, personId: state.people[0]?.id, date: presetDate || todayStr(), time:'', title:''};
+  const inSeries = isEdit && !!ev.seriesId;
   const services = connectedCalServices();
   const serviceChecks = services.map(s=>{
-    const linked = !!ev[s.idField];
+    const linked = !!(ev[s.idField] || ev[s.seriesField]);
     const checked = isEdit ? linked : true; // new events sync out by default; edits reflect current link
     return `<div class="field" style="display:flex; align-items:center; gap:8px;">
       <input type="checkbox" id="svc_${s.key}" style="width:18px;height:18px;" ${checked?'checked':''}>
       <label style="margin:0;">Sync with ${s.label}</label></div>`;
   }).join('');
+
+  /* New events can start a series; existing ones can only be edited in scope.
+     Changing a rule after the fact is deliberately not supported — delete the
+     series and add it again, which keeps the provider copy in step. */
+  const repeatBlock = isEdit ? '' : `
+    <div class="field"><label>Repeats</label>
+      <select id="evRepeat">
+        <option value="none">Does not repeat</option>
+        ${Object.entries(RECUR_LABELS).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field" id="evRepeatEndWrap" style="display:none;">
+      <label>Ends</label>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <select id="evRepeatEndType" style="width:auto;">
+          <option value="count">After</option>
+          <option value="until">On date</option>
+        </select>
+        <input type="number" id="evRepeatCount" min="2" max="${RECUR_MAX}" value="12" style="width:90px;">
+        <span id="evRepeatCountLabel" style="font-size:13px; color:var(--ink-soft);">times</span>
+        <input type="date" id="evRepeatUntil" style="display:none; width:auto;">
+      </div>
+    </div>`;
+
+  const seriesBlock = inSeries ? `
+    <div style="background:var(--paper-2); border:1px solid var(--line); border-radius:10px; padding:8px 12px; margin-bottom:12px; font-size:12.5px;">
+      🔁 Part of a repeating series — ${escapeHtml(seriesLabel(ev))}
+    </div>
+    <div class="field"><label>Apply to</label>
+      <select id="evScope">
+        <option value="one">This event only</option>
+        <option value="all">All events in the series</option>
+      </select>
+    </div>` : '';
+
   openModal(`
     <h3>${isEdit?'Edit event':'Add event'}</h3>
+    ${seriesBlock}
     <div class="field"><label>Person</label><select id="evPerson">${peopleOptionsHtml(ev.personId)}</select></div>
     <div class="field"><label>Title</label><input id="evTitle" value="${escapeHtml(ev.title)}" placeholder="Soccer practice"></div>
-    <div class="field"><label>Date</label><input type="date" id="evDate" value="${ev.date}"></div>
+    <div class="field"><label>Date</label><input type="date" id="evDate" value="${ev.date}">
+      ${inSeries?`<div id="evDateNote" style="display:none; font-size:12px; color:var(--ink-soft); margin-top:4px;">Each event keeps its own date when you edit the whole series.</div>`:''}</div>
     <div class="field"><label>Time (optional)</label><input type="time" id="evTime" value="${ev.time}"></div>
+    ${repeatBlock}
     ${serviceChecks}
     <div class="modal-actions">
       ${isEdit ? '<button class="btn btn-danger" id="evDelete">Delete</button>' : ''}
@@ -806,8 +1047,64 @@ function eventModal(existing, presetDate){
   `);
   document.getElementById('evCancel').onclick = closeModal;
 
+  if(!isEdit){
+    const repeatSel = document.getElementById('evRepeat');
+    const endWrap = document.getElementById('evRepeatEndWrap');
+    const endType = document.getElementById('evRepeatEndType');
+    const syncRepeatUi = ()=>{
+      endWrap.style.display = repeatSel.value==='none' ? 'none' : '';
+      const byCount = endType.value==='count';
+      document.getElementById('evRepeatCount').style.display = byCount ? '' : 'none';
+      document.getElementById('evRepeatCountLabel').style.display = byCount ? '' : 'none';
+      document.getElementById('evRepeatUntil').style.display = byCount ? 'none' : '';
+    };
+    repeatSel.onchange = syncRepeatUi;
+    endType.onchange = syncRepeatUi;
+    syncRepeatUi();
+  }
+  if(inSeries){
+    const scopeSel = document.getElementById('evScope');
+    scopeSel.onchange = ()=>{
+      const all = scopeSel.value==='all';
+      document.getElementById('evDate').disabled = all;
+      document.getElementById('evDateNote').style.display = all ? '' : 'none';
+    };
+  }
+
+  const readRecurrence = ()=>{
+    const sel = document.getElementById('evRepeat');
+    const freq = sel ? sel.value : 'none';
+    if(freq==='none') return {freq:'none'};
+    if(document.getElementById('evRepeatEndType').value==='until'){
+      return {freq, until: document.getElementById('evRepeatUntil').value};
+    }
+    const n = parseInt(document.getElementById('evRepeatCount').value, 10);
+    return {freq, count: Math.max(2, Math.min(RECUR_MAX, isNaN(n) ? 12 : n))};
+  };
+  const scopeValue = ()=>{
+    const sel = document.getElementById('evScope');
+    return sel ? sel.value : 'one';
+  };
+
   if(isEdit) document.getElementById('evDelete').onclick = ()=>requireUnlock(async ()=>{
+    const wholeSeries = inSeries && scopeValue()==='all';
     const errs = [];
+    if(wholeSeries){
+      const members = seriesMembers(ev.seriesId);
+      for(const s of services){
+        try{
+          /* Deleting the provider's master removes every instance in one call —
+             only fall back to per-instance deletes when there's no master id. */
+          if(ev[s.seriesField]) await s.api.removeSeries(ev[s.seriesField]);
+          else for(const m of members){ if(m[s.idField]) await s.api.remove(m); }
+        }catch(e){ errs.push(s.label); }
+      }
+      state.events = state.events.filter(e=>e.seriesId!==ev.seriesId);
+      await saveState(); closeModal(); render();
+      if(errs.length) toast('Series removed here, but couldn\'t delete from '+errs.join(' & ')+'.', 'error');
+      else toast(`Series deleted (${members.length} events).`, 'success');
+      return;
+    }
     for(const s of services){
       if(ev[s.idField]){ try{ await s.api.remove(ev); }catch(e){ errs.push(s.label); } }
     }
@@ -820,15 +1117,66 @@ function eventModal(existing, presetDate){
   document.getElementById('evSave').onclick = async ()=>{
     const title = document.getElementById('evTitle').value.trim();
     if(!title){ toast('Give the event a title.', 'error'); return; }
+    const personId = document.getElementById('evPerson').value;
+    const date = document.getElementById('evDate').value;
+    const time = document.getElementById('evTime').value;
+
+    /* ---- Edit applied to the whole series ---- */
+    if(inSeries && scopeValue()==='all'){
+      const members = seriesMembers(ev.seriesId);
+      members.forEach(m=>{ m.title = title; m.personId = personId; m.time = time; });
+      const errs = [];
+      for(const s of services){
+        const masterId = ev[s.seriesField];
+        if(!masterId) continue;
+        try{ await s.api.updateSeries(masterId, members[0]); }catch(e){ errs.push(s.label); }
+      }
+      await saveState(); closeModal(); render();
+      if(errs.length) toast('Series updated here, but sync failed for '+errs.join(' & ')+'.', 'error');
+      else toast(`Series updated (${members.length} events).`, 'success');
+      return;
+    }
+
+    /* ---- New event that starts a series ---- */
+    if(!isEdit){
+      const rec = readRecurrence();
+      const dates = expandRecurrence(date, rec);
+      if(dates.length > 1){
+        const seriesId = uid();
+        const rule = {freq: rec.freq, count: dates.length};
+        const instances = dates.map((d, i)=>({
+          id: uid(), personId, title, date: d, time,
+          source: undefined, seriesId, seriesRule: rule, seriesIndex: i
+        }));
+        const errs = [];
+        for(const s of services){
+          const box = document.getElementById('svc_'+s.key);
+          if(!(box && box.checked)) continue;
+          try{
+            const masterId = await s.api.pushSeries(instances[0], rec.freq, dates.length);
+            instances.forEach(x=>{ x[s.seriesField] = masterId; if(!x.source) x.source = s.key; });
+          }catch(e){ errs.push(s.label); }
+        }
+        state.events.push(...instances);
+        await saveState(); closeModal(); render();
+        if(errs.length) toast(`Added ${dates.length} events here, but calendar sync failed for `+errs.join(' & ')+'.', 'error');
+        else toast(`Added ${dates.length} events — ${RECUR_LABELS[rec.freq].toLowerCase()}.`, 'success');
+        return;
+      }
+    }
+
+    /* ---- Single event (or one instance of a series) ---- */
     const data = {
       id: ev.id || uid(),
-      personId: document.getElementById('evPerson').value,
-      title,
-      date: document.getElementById('evDate').value,
-      time: document.getElementById('evTime').value,
+      personId, title, date, time,
       source: ev.source,
       googleId: ev.googleId,
-      graphId: ev.graphId
+      graphId: ev.graphId,
+      seriesId: ev.seriesId,
+      seriesRule: ev.seriesRule,
+      seriesIndex: ev.seriesIndex,
+      seriesGoogleId: ev.seriesGoogleId,
+      seriesGraphId: ev.seriesGraphId
     };
     const errs = [];
     for(const s of services){
@@ -1394,21 +1742,58 @@ const outlookSync = {
   async pull(personId){
     const start = new Date(); start.setDate(start.getDate()-30);
     const end = new Date(); end.setDate(end.getDate()+180);
-    const path = `/me/calendarView?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}&$top=250&$select=id,subject,start,end,isAllDay&$orderby=start/dateTime`;
+    const path = `/me/calendarView?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}&$top=250&$select=id,subject,start,end,isAllDay,seriesMasterId,type&$orderby=start/dateTime`;
     const data = await this._graph(path);
     let added=0, updated=0;
     (data.value||[]).forEach(ev=>{
       const parsed = this._parseStart(ev);
       if(!parsed.date) return;
-      const existing = state.events.find(x=>x.graphId===ev.id);
-      if(existing){ existing.title=ev.subject||'(no title)'; existing.date=parsed.date; existing.time=parsed.time; updated++; }
-      else { state.events.push({id:uid(), personId, title:ev.subject||'(no title)', date:parsed.date, time:parsed.time, source:'outlook', graphId:ev.id}); added++; }
+      const title = ev.subject||'(no title)';
+      const masterId = ev.seriesMasterId || null;
+      let existing = state.events.find(x=>x.graphId===ev.id);
+      /* Same adoption rule as Google: instances of a series we pushed as one
+         master event get matched by (master id + date), never duplicated. */
+      if(!existing && masterId){
+        existing = state.events.find(x=>x.seriesGraphId===masterId && x.date===parsed.date && !x.graphId);
+        if(existing) existing.graphId = ev.id;
+      }
+      if(existing){
+        if(masterId && !existing.seriesGraphId) existing.seriesGraphId = masterId;
+        existing.title=title; existing.date=parsed.date; existing.time=parsed.time; updated++;
+      }
+      else {
+        const sibling = masterId ? state.events.find(x=>x.seriesGraphId===masterId) : null;
+        state.events.push({
+          id:uid(), personId, title, date:parsed.date, time:parsed.time, source:'outlook', graphId:ev.id,
+          seriesId: masterId ? (sibling ? sibling.seriesId : uid()) : undefined,
+          seriesGraphId: masterId || undefined,
+          seriesRule: sibling ? sibling.seriesRule : undefined
+        });
+        added++;
+      }
     });
     return {added, updated};
   },
   async push(e){ const r = await this._graph('/me/events',{method:'POST', body:JSON.stringify(this._toGraph(e))}); return r.id; },
   async update(e){ if(e.graphId) await this._graph('/me/events/'+e.graphId,{method:'PATCH', body:JSON.stringify(this._toGraph(e))}); },
-  async remove(e){ if(e.graphId) await this._graph('/me/events/'+e.graphId,{method:'DELETE'}); }
+  async remove(e){ if(e.graphId) await this._graph('/me/events/'+e.graphId,{method:'DELETE'}); },
+
+  /* ---- Series: one master event with a recurrence pattern ---- */
+  async pushSeries(first, freq, count){
+    const body = this._toGraph(first);
+    const rec = recurToGraph(first.date, freq, count, this.tz);
+    if(rec) body.recurrence = rec;
+    const r = await this._graph('/me/events',{method:'POST', body:JSON.stringify(body)});
+    return r.id;
+  },
+  async updateSeries(masterId, first){
+    if(!masterId) return;
+    await this._graph('/me/events/'+masterId,{method:'PATCH', body:JSON.stringify(this._toGraph(first))});
+  },
+  async removeSeries(masterId){
+    if(!masterId) return;
+    await this._graph('/me/events/'+masterId,{method:'DELETE'});
+  }
 };
 function outlookCount(){ return state.events.filter(e=>e.source==='outlook').length; }
 
@@ -1614,14 +1999,33 @@ const googleSync = {
       const parsed = this._parseStart(ev);
       if(!parsed.date) return;
       seen.add(ev.id);
-      const existing = state.events.find(x=>x.googleId===ev.id);
       const title = ev.summary || '(no title)';
+      const masterId = ev.recurringEventId || null;
+      let existing = state.events.find(x=>x.googleId===ev.id);
+      /* A series we created here was pushed as a single master event, so its
+         instances come back with ids we've never seen. Match them to the local
+         twins by (master id + date) and adopt the instance id instead of
+         creating a second copy of every occurrence. */
+      if(!existing && masterId){
+        existing = state.events.find(x=>x.seriesGoogleId===masterId && x.date===parsed.date && !x.googleId);
+        if(existing) existing.googleId = ev.id;
+      }
       if(existing){
+        if(masterId && !existing.seriesGoogleId) existing.seriesGoogleId = masterId;
         if(existing.title!==title || existing.date!==parsed.date || existing.time!==parsed.time){
           existing.title=title; existing.date=parsed.date; existing.time=parsed.time; updated++;
         }
       }
-      else { state.events.push({id:uid(), personId, title, date:parsed.date, time:parsed.time, source:'google', googleId:ev.id}); added++; }
+      else {
+        const sibling = masterId ? state.events.find(x=>x.seriesGoogleId===masterId) : null;
+        state.events.push({
+          id:uid(), personId, title, date:parsed.date, time:parsed.time, source:'google', googleId:ev.id,
+          seriesId: masterId ? (sibling ? sibling.seriesId : uid()) : undefined,
+          seriesGoogleId: masterId || undefined,
+          seriesRule: sibling ? sibling.seriesRule : undefined
+        });
+        added++;
+      }
     });
     /* Events deleted in Google should disappear here too — but only ones that
        originated in Google and fall inside the window we just queried. */
@@ -1649,7 +2053,29 @@ const googleSync = {
   },
   async push(e){ this._requireWrite(); await this.ensureToken(); const r = await this._api('/calendars/'+this._calId()+'/events',{method:'POST', body:JSON.stringify(this._toBody(e))}); return r.id; },
   async update(e){ if(!e.googleId) return; this._requireWrite(); await this.ensureToken(); await this._api('/calendars/'+this._calId()+'/events/'+encodeURIComponent(e.googleId),{method:'PATCH', body:JSON.stringify(this._toBody(e))}); },
-  async remove(e){ if(!e.googleId) return; this._requireWrite(); await this.ensureToken(); await this._api('/calendars/'+this._calId()+'/events/'+encodeURIComponent(e.googleId),{method:'DELETE'}); }
+  async remove(e){ if(!e.googleId) return; this._requireWrite(); await this.ensureToken(); await this._api('/calendars/'+this._calId()+'/events/'+encodeURIComponent(e.googleId),{method:'DELETE'}); },
+
+  /* ---- Series: one master event with an RRULE, not N separate events ---- */
+  async pushSeries(first, freq, count){
+    this._requireWrite(); await this.ensureToken();
+    const body = this._toBody(first);
+    const rule = recurToRRule(freq, count);
+    if(rule) body.recurrence = [rule];
+    const r = await this._api('/calendars/'+this._calId()+'/events',{method:'POST', body:JSON.stringify(body)});
+    return r.id;
+  },
+  /* Patching the master (start = first occurrence) rolls the change through every
+     instance; omitting `recurrence` leaves the existing rule in place. */
+  async updateSeries(masterId, first){
+    if(!masterId) return;
+    this._requireWrite(); await this.ensureToken();
+    await this._api('/calendars/'+this._calId()+'/events/'+encodeURIComponent(masterId),{method:'PATCH', body:JSON.stringify(this._toBody(first))});
+  },
+  async removeSeries(masterId){
+    if(!masterId) return;
+    this._requireWrite(); await this.ensureToken();
+    await this._api('/calendars/'+this._calId()+'/events/'+encodeURIComponent(masterId),{method:'DELETE'});
+  }
 };
 
 /* Turns Google's terse error codes into something a person can act on. */
@@ -2047,8 +2473,6 @@ function attachHandlers(){
   if(addEventBtn) addEventBtn.onclick = ()=>eventModal(null, state.calDate);
   const syncBtn = document.getElementById('syncBtn');
   if(syncBtn) syncBtn.onclick = syncModal;
-  const calConnectBtn = document.getElementById('calConnectBtn');
-  if(calConnectBtn) calConnectBtn.onclick = syncModal;
   const calSyncManage = document.getElementById('calSyncManage');
   if(calSyncManage) calSyncManage.onclick = syncModal;
   document.querySelectorAll('[data-calview]').forEach(b=>b.onclick = ()=>{ state.calView = b.dataset.calview; saveState(); render(); });

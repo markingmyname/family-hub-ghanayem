@@ -47,10 +47,11 @@ The Sync panel has step-by-step "where to find the file" notes for each service.
 
 ### Google Calendar live sync — built in, two-way, no backend
 
-Tap **🔄 Sync** (or "Connect a calendar" on the Calendar tab) → **Connect Google**. Google's own in-browser sign-in (Google Identity Services) handles the security; you just approve access. Once connected it's **two-way**:
+Tap **🔄 Sync** (or **Settings → Open calendar sync**) → **Connect Google**. Google's own in-browser sign-in (Google Identity Services) handles the security; you just approve access. Once connected it's **two-way**:
 
 - **Pull** — reads your Google events and fills Family Hub immediately.
 - **Write-back** — when you add, edit, or delete an event in Family Hub with "Sync with Google Calendar" checked, the same change happens in your real Google calendar.
+- **Repeating events** — set **Repeats** when adding an event (daily, weekdays, weekly, every 2 weeks, monthly, yearly) and choose an end (after N times, or on a date). The series is written to Google as one real recurring event, not a pile of copies. Editing or deleting one gives you the choice of *this event only* or *all events in the series*.
 
 It uses the `calendar.events` permission — the least-privilege scope that still allows editing. It can read and change events, but can't touch your calendar sharing or account settings.
 
