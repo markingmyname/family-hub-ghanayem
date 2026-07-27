@@ -323,6 +323,72 @@
   .add-row{display:flex; gap:8px; margin-top:10px;}
   .add-row input{flex:1;}
 
+  /* ---------- To-Dos (Reminders-style) ---------- */
+  .todo-toolbar{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:10px;}
+  .todo-toolbar .spacer{margin-left:auto;}
+  .todo-lists{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;}
+  .todo-chip{
+    display:flex; align-items:center; gap:7px; cursor:pointer;
+    border:1.5px solid var(--line); border-radius:999px; padding:5px 13px;
+    font-size:13px; font-weight:600; background:#fff; white-space:nowrap;
+  }
+  .todo-chip .cnt{font-family:'JetBrains Mono'; font-size:11px; color:var(--ink-soft);}
+  .todo-chip.active{border-color:var(--board); background:var(--paper-2);}
+  .todo-chip .swatch-dot{width:10px; height:10px; border-radius:50%; flex-shrink:0;}
+  .todo-section{margin-bottom:18px;}
+  .todo-section-head{
+    display:flex; align-items:center; gap:8px; font-weight:700; font-size:13px;
+    padding:0 2px 6px; border-bottom:2px solid var(--line); margin-bottom:8px;
+  }
+  .todo-section-head .cnt{margin-left:auto; font-family:'JetBrains Mono'; font-size:11px; color:var(--ink-soft); font-weight:600;}
+  .todo-row{
+    display:flex; align-items:flex-start; gap:10px; padding:8px 10px;
+    border-bottom:1px solid var(--line); background:#fff;
+  }
+  .todo-row:last-child{border-bottom:none;}
+  .todo-row.sub{padding-left:34px; background:#fcfbf7;}
+  /* Reminders' hollow circle, filling in when complete. */
+  .todo-check{
+    width:21px; height:21px; border-radius:50%; border:2px solid #c3bcae;
+    background:#fff; cursor:pointer; flex-shrink:0; margin-top:1px; padding:0;
+    display:flex; align-items:center; justify-content:center; font-size:12px; color:#fff;
+  }
+  .todo-check.on{background:var(--good); border-color:var(--good);}
+  .todo-check.p1{border-color:#E2413F;} .todo-check.p2{border-color:#E2413F;} .todo-check.p3{border-color:#E2413F;}
+  .todo-main{flex:1; min-width:0;}
+  .todo-title{font-size:14px; font-weight:600; overflow-wrap:anywhere;}
+  .todo-row.is-done .todo-title{text-decoration:line-through; color:var(--ink-soft);}
+  .todo-notes{font-size:12px; color:var(--ink-soft); margin-top:2px; overflow-wrap:anywhere;}
+  .todo-meta{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:3px; font-size:11.5px; color:var(--ink-soft);}
+  .todo-due.overdue{color:#c62828; font-weight:700;}
+  .todo-due.today{color:#E07C1D; font-weight:700;}
+  .todo-prio{color:#E2413F; font-weight:800; letter-spacing:-1px;}
+  .todo-who{display:inline-flex; align-items:center; gap:4px;}
+  .todo-actions{display:flex; align-items:center; gap:2px; flex-shrink:0;}
+  .todo-actions button{background:transparent; border:none; cursor:pointer; font-size:14px; color:var(--ink-soft); padding:2px 5px; border-radius:6px;}
+  .todo-actions button:hover{background:var(--paper-2);}
+  .todo-flag.on{color:#E07C1D;}
+  .todo-add{display:flex; gap:8px; margin-top:8px;}
+  .todo-add input{flex:1;}
+  @media(max-width:640px){
+    .todo-row.sub{padding-left:26px;}
+    .todo-title{font-size:13.5px;}
+  }
+
+  /* ---------- Rewards: ways to earn ---------- */
+  .earn-grid{display:grid; gap:10px; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); align-items:start; margin-bottom:6px;}
+  .earn-card{border:1px solid var(--line); border-radius:10px; overflow:hidden; background:#fff; min-width:0;}
+  .earn-head{display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 12px; font-weight:700; font-size:13px; flex-wrap:wrap;}
+  .earn-body{padding:4px 0;}
+  .earn-row{display:flex; align-items:center; gap:8px; padding:6px 12px; border-top:1px solid var(--line); font-size:12.5px; min-width:0;}
+  .earn-row:first-child{border-top:none;}
+  .earn-row.is-done{opacity:0.5;}
+  .earn-row.is-done .earn-name{text-decoration:line-through;}
+  .earn-icon{flex-shrink:0;}
+  .earn-name{flex:1; min-width:0; font-weight:600; overflow-wrap:anywhere;}
+  .earn-kind{font-size:10.5px; color:var(--ink-soft); white-space:nowrap;}
+  .earn-pts{font-family:'JetBrains Mono'; font-weight:700; font-size:12px; white-space:nowrap;}
+
   /* ---------- Settings / avatar picker ---------- */
   .swatch-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:8px; margin-bottom:6px;}
   .swatch{width:100%; aspect-ratio:1; border-radius:8px; cursor:pointer; border:3px solid transparent;}
@@ -375,6 +441,7 @@
   <nav class="tabs" id="tabNav">
     <button data-tab="calendar" class="active">📅 Calendar</button>
     <button data-tab="chores">✅ Chores</button>
+    <button data-tab="todos">📝 To-Dos</button>
     <button data-tab="habits">🌱 Habits</button>
     <button data-tab="rewards">⭐ Rewards</button>
     <button data-tab="budget">💰 Budget</button>
@@ -462,6 +529,15 @@ function defaultState(){
     budget: { transactions: [] },
     meals: { plan:{}, recipes:[], pantry:[], grocery:[] },
     habits: { items: [], log: {} },
+    todos: {
+      lists: [
+        {id:'l1', name:'Home',    color:'#3B6FE0', emoji:'🏡'},
+        {id:'l2', name:'School',  color:'#E07C1D', emoji:'🎒'},
+        {id:'l3', name:'Errands', color:'#3FA34D', emoji:'🛒'}
+      ],
+      items: []
+    },
+    todoView: { listId:'all', sort:'manual', showCompleted:false },
     outlook: { clientId: '' },
     google: { clientId: '640349356853-ljl8ljpfpktegj49f9f4kr1kkb6fngv2.apps.googleusercontent.com', calendarId: 'ac3601938b78b11f2849f0a53d25e7047d4c115a510dd7d02464bc8a72b60a85@group.calendar.google.com', apiKey: '', consented: false },
     pin: '1234',
@@ -751,6 +827,25 @@ function migrateState(s){
   if(!s.habits) s.habits = { items: [], log: {} };
   if(!Array.isArray(s.habits.items)) s.habits.items = [];
   if(!s.habits.log || typeof s.habits.log !== 'object') s.habits.log = {};
+  s.habits.items.forEach(h=>{ if(typeof h.points !== 'number') h.points = 1; });
+  if(!s.todos) s.todos = { lists: [], items: [] };
+  if(!Array.isArray(s.todos.lists)) s.todos.lists = [];
+  if(!Array.isArray(s.todos.items)) s.todos.items = [];
+  if(!s.todos.lists.length) s.todos.lists = [
+    {id:'l1', name:'Home', color:'#3B6FE0', emoji:'🏡'},
+    {id:'l2', name:'School', color:'#E07C1D', emoji:'🎒'},
+    {id:'l3', name:'Errands', color:'#3FA34D', emoji:'🛒'}
+  ];
+  s.todos.items.forEach((t,i)=>{
+    if(!Array.isArray(t.personIds)) t.personIds = [];
+    if(typeof t.priority !== 'number') t.priority = 0;
+    if(typeof t.order !== 'number') t.order = i;
+    if(t.flagged === undefined) t.flagged = false;
+    if(t.done === undefined) t.done = false;
+    if(t.notes === undefined) t.notes = '';
+    if(t.due === undefined) t.due = '';
+  });
+  if(!s.todoView) s.todoView = { listId:'all', sort:'manual', showCompleted:false };
   if(!s.habitMonth) s.habitMonth = monthStr(new Date());
   if(!s.habitPersonId) s.habitPersonId = (s.people && s.people[0] && s.people[0].id) || 'p1';
   if(s.timeFormat !== '24h') s.timeFormat = '12h';
@@ -1076,6 +1171,7 @@ function render(){
   try{
     if(activeTab==='calendar') main.innerHTML = renderCalendar();
     else if(activeTab==='chores') main.innerHTML = renderChores();
+    else if(activeTab==='todos') main.innerHTML = renderTodos();
     else if(activeTab==='habits') main.innerHTML = renderHabits();
     else if(activeTab==='rewards') main.innerHTML = renderRewards();
     else if(activeTab==='budget') main.innerHTML = renderBudget();
@@ -1814,6 +1910,7 @@ function habitModal(type){
         <option value="weekly" ${type==='weekly'?'selected':''}>Once a week</option>
       </select>
     </div>
+    <div class="field"><label>Reward points per tick</label><input type="number" id="habitPoints" min="0" max="100" value="1"></div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="habitCancel">Cancel</button>
       <button class="btn btn-primary" id="habitSave">Save</button>
@@ -1824,7 +1921,8 @@ function habitModal(type){
     const name = document.getElementById('habitName').value.trim();
     if(!name){ toast('Give the habit a name.', 'error'); return; }
     const personId = document.getElementById('habitPersonSel').value;
-    state.habits.items.push({ id:uid(), personId, name, type: document.getElementById('habitType').value });
+    state.habits.items.push({ id:uid(), personId, name, type: document.getElementById('habitType').value,
+      points: Math.max(0, Number(document.getElementById('habitPoints').value) || 0) });
     state.habitPersonId = personId;   // jump to whoever the habit was added for
     await saveState(); closeModal(); render();
   };
@@ -1836,9 +1934,359 @@ function shiftHabitMonth(dir){
   saveState(); render();
 }
 
-/* ============================= REWARDS ============================= */
+/* ============================= TO-DOS (Reminders-style) =============================
+   Lists act as sections, items can nest one level as bulleted sub-tasks, and the
+   smart views (Today / Scheduled / Flagged) are filters over the same item array. */
+const TODO_SORTS = [
+  {key:'manual',   label:'Manual order'},
+  {key:'due',      label:'Due date'},
+  {key:'priority', label:'Priority'},
+  {key:'title',    label:'Title'}
+];
+const TODO_PRIORITY = ['', '!', '!!', '!!!'];
+
+function todoList(id){ return state.todos.lists.find(l=>l.id===id); }
+function todoView(){ return state.todoView || (state.todoView = {listId:'all', sort:'manual', showCompleted:false}); }
+function todoPeople(t){ return (t.personIds||[]).map(personById).filter(Boolean); }
+function todoWhoLabel(t){
+  const ppl = todoPeople(t);
+  return ppl.length ? ppl.map(p=>p.name).join(', ') : familyLabel();
+}
+function todoIsToday(t){ return t.due && t.due === todayStr(); }
+function todoIsOverdue(t){ return t.due && t.due < todayStr() && !t.done; }
+
+/* Which items belong to the current smart view or list. */
+function todoMatchesView(t, view){
+  if(view === 'all') return true;
+  if(view === 'today') return t.due && t.due <= todayStr();
+  if(view === 'scheduled') return !!t.due;
+  if(view === 'flagged') return !!t.flagged;
+  return t.listId === view;
+}
+function sortTodos(items, sort){
+  const copy = items.slice();
+  if(sort === 'due'){
+    /* Undated items sink to the bottom rather than sorting as an empty string. */
+    copy.sort((a,b)=>(a.due||'9999-99-99').localeCompare(b.due||'9999-99-99') || a.order-b.order);
+  } else if(sort === 'priority'){
+    copy.sort((a,b)=>(b.priority||0)-(a.priority||0) || a.order-b.order);
+  } else if(sort === 'title'){
+    copy.sort((a,b)=>a.title.localeCompare(b.title));
+  } else {
+    copy.sort((a,b)=>a.order-b.order);
+  }
+  return copy;
+}
+function todoDueHtml(t){
+  if(!t.due) return '';
+  const cls = todoIsOverdue(t) ? 'overdue' : (todoIsToday(t) ? 'today' : '');
+  const d = parseDate(t.due);
+  const label = todoIsToday(t) ? 'Today' : `${MONTHS[d.getMonth()].slice(0,3)} ${d.getDate()}`;
+  return `<span class="todo-due ${cls}">📅 ${label}${todoIsOverdue(t)?' · overdue':''}</span>`;
+}
+function todoRowHtml(t, isSub){
+  const prio = TODO_PRIORITY[t.priority||0];
+  return `<div class="todo-row ${t.done?'is-done':''} ${isSub?'sub':''}">
+      <button class="todo-check ${t.done?'on':''}" data-todotoggle="${t.id}" title="${t.done?'Mark not done':'Mark done'}">${t.done?'✓':''}</button>
+      <div class="todo-main">
+        <div class="todo-title">${prio?`<span class="todo-prio">${prio}</span> `:''}${escapeHtml(t.title)}</div>
+        ${t.notes?`<div class="todo-notes">${escapeHtml(t.notes)}</div>`:''}
+        <div class="todo-meta">
+          <span class="todo-who">👤 ${escapeHtml(todoWhoLabel(t))}</span>
+          ${todoDueHtml(t)}
+          ${t.points?`<span>⭐ ${t.points} pt${t.points===1?'':'s'}</span>`:''}
+        </div>
+      </div>
+      <div class="todo-actions">
+        <button class="todo-flag ${t.flagged?'on':''}" data-todoflag="${t.id}" title="Flag">${t.flagged?'🚩':'⚐'}</button>
+        ${isSub?'':`<button data-todosub="${t.id}" title="Add sub-task">＋</button>`}
+        <button data-todoedit="${t.id}" title="Edit">✎</button>
+        <button data-tododel="${t.id}" title="Delete">✕</button>
+      </div>
+    </div>`;
+}
+
+function renderTodos(){
+  const view = todoView();
+  const all = state.todos.items;
+  const counts = id => all.filter(t=>!t.done && !t.parentId && todoMatchesView(t, id)).length;
+
+  const smart = [
+    {id:'all', label:'📋 All'},
+    {id:'today', label:'📆 Today'},
+    {id:'scheduled', label:'🗓️ Scheduled'},
+    {id:'flagged', label:'🚩 Flagged'}
+  ].map(v=>`<span class="todo-chip ${view.listId===v.id?'active':''}" data-todoview="${v.id}">${v.label}<span class="cnt">${counts(v.id)}</span></span>`).join('');
+
+  const listChips = state.todos.lists.map(l=>
+    `<span class="todo-chip ${view.listId===l.id?'active':''}" data-todoview="${l.id}">
+       <span class="swatch-dot" style="background:${l.color};"></span>${l.emoji||''} ${escapeHtml(l.name)}
+       <span class="cnt">${counts(l.id)}</span></span>`).join('');
+
+  /* In a smart view the items are grouped by their list, the way Reminders
+     shows list headers inside Today/All. A single list needs no grouping. */
+  const grouping = ['all','today','scheduled','flagged'].includes(view.listId);
+  const inView = all.filter(t=>todoMatchesView(t, view.listId) && (view.showCompleted || !t.done));
+  const parents = inView.filter(t=>!t.parentId);
+  const childrenOf = id => sortTodos(all.filter(t=>t.parentId===id && (view.showCompleted || !t.done)), view.sort);
+
+  const renderGroup = (title, color, items)=>{
+    if(!items.length) return '';
+    const rows = sortTodos(items, view.sort)
+      .map(t=>todoRowHtml(t,false) + childrenOf(t.id).map(c=>todoRowHtml(c,true)).join(''))
+      .join('');
+    return `<div class="todo-section">
+        <div class="todo-section-head">
+          ${color?`<span class="swatch-dot" style="background:${color};"></span>`:''}${escapeHtml(title)}
+          <span class="cnt">${items.filter(t=>!t.done).length} open</span>
+        </div>
+        ${rows}
+      </div>`;
+  };
+
+  let body = '';
+  if(grouping){
+    body = state.todos.lists.map(l=>renderGroup(`${l.emoji||''} ${l.name}`, l.color, parents.filter(t=>t.listId===l.id))).join('');
+    const orphans = parents.filter(t=>!todoList(t.listId));
+    body += renderGroup('Unsorted', '#8a8a8a', orphans);
+  } else {
+    const l = todoList(view.listId);
+    body = renderGroup(`${l?l.emoji||'':''} ${l?l.name:'List'}`, l?l.color:'', parents);
+  }
+  if(!body) body = `<div class="empty">Nothing here yet — add your first to-do below ✍️</div>`;
+
+  const addTarget = grouping ? (state.todos.lists[0]?.id || '') : view.listId;
+  const addTargetName = todoList(addTarget) ? todoList(addTarget).name : 'list';
+
+  return `<div class="card">
+      <div class="section-title">
+        <h2>To-Dos</h2>
+        <div style="display:flex; gap:8px;">
+          <button class="btn btn-ghost" id="addTodoListBtn">+ New list</button>
+          <button class="btn btn-mustard" id="addTodoBtn">+ New to-do</button>
+        </div>
+      </div>
+      <div class="todo-lists">${smart}${listChips}</div>
+      <div class="todo-toolbar">
+        <label style="margin:0; font-size:12px;">Sort</label>
+        <select id="todoSort" style="width:auto;">
+          ${TODO_SORTS.map(s=>`<option value="${s.key}" ${view.sort===s.key?'selected':''}>${s.label}</option>`).join('')}
+        </select>
+        <label class="todo-chip" style="cursor:pointer;">
+          <input type="checkbox" id="todoShowCompleted" ${view.showCompleted?'checked':''} style="width:15px;height:15px;margin:0;">
+          Show completed
+        </label>
+        <span class="spacer"></span>
+        <button class="btn btn-ghost" id="todoClearCompleted" style="font-size:12px;">Clear completed</button>
+      </div>
+      ${body}
+      <div class="todo-add">
+        <input id="todoQuickAdd" placeholder="Add to ${escapeHtml(addTargetName)} and press Enter">
+        <button class="btn btn-primary" id="todoQuickAddBtn" data-list="${addTarget}">Add</button>
+      </div>
+    </div>`;
+}
+
+function todoModal(existing, presetListId, parentId){
+  const isEdit = !!existing;
+  const t = existing || {
+    id:null, listId: presetListId || state.todos.lists[0]?.id, title:'', notes:'', due:'',
+    priority:0, flagged:false, personIds:[], points:0, parentId: parentId || null
+  };
+  openModal(`
+    <h3>${isEdit?'Edit to-do':(parentId?'Add sub-task':'New to-do')}</h3>
+    <div class="field"><label>What needs doing?</label><input id="tdTitle" value="${escapeHtml(t.title)}" placeholder="Take out the recycling"></div>
+    <div class="field"><label>Notes (optional)</label><textarea id="tdNotes" rows="2" placeholder="Any details…">${escapeHtml(t.notes||'')}</textarea></div>
+    <div class="field"><label>List</label><select id="tdList">${state.todos.lists.map(l=>`<option value="${l.id}" ${l.id===t.listId?'selected':''}>${escapeHtml((l.emoji||'')+' '+l.name)}</option>`).join('')}</select></div>
+    <div class="field"><label>Due date (optional)</label><input type="date" id="tdDue" value="${t.due||''}"></div>
+    <div class="field"><label>Priority</label>
+      <select id="tdPriority">
+        <option value="0" ${t.priority===0?'selected':''}>None</option>
+        <option value="1" ${t.priority===1?'selected':''}>! Low</option>
+        <option value="2" ${t.priority===2?'selected':''}>!! Medium</option>
+        <option value="3" ${t.priority===3?'selected':''}>!!! High</option>
+      </select>
+    </div>
+    <div class="field"><label>Who's this for?</label>
+      <div class="who-picker">
+        <label class="who-opt who-family">
+          <input type="checkbox" id="tdFamily" ${!(t.personIds||[]).length?'checked':''}>
+          <span class="dot" style="background:var(--board);"></span>
+          <span>${escapeHtml(familyLabel())} — anyone</span>
+        </label>
+        ${state.people.map(p=>`
+          <label class="who-opt">
+            <input type="checkbox" class="td-person" value="${p.id}" ${(t.personIds||[]).includes(p.id)?'checked':''}>
+            ${avatarHtml(p,'sm')}<span>${escapeHtml(p.name)}</span>
+          </label>`).join('')}
+      </div>
+    </div>
+    <div class="field"><label>Reward points when done</label><input type="number" id="tdPoints" min="0" max="500" value="${t.points||0}"></div>
+    <div class="modal-actions">
+      ${isEdit?'<button class="btn btn-danger" id="tdDelete">Delete</button>':''}
+      <button class="btn btn-ghost" id="tdCancel">Cancel</button>
+      <button class="btn btn-primary" id="tdSave">Save</button>
+    </div>
+  `);
+  const fam = document.getElementById('tdFamily');
+  const ppl = [...document.querySelectorAll('.td-person')];
+  fam.onchange = ()=>{ if(fam.checked) ppl.forEach(c=>c.checked=false); };
+  ppl.forEach(c=>c.onchange = ()=>{ if(c.checked) fam.checked = false; });
+
+  document.getElementById('tdCancel').onclick = closeModal;
+  if(isEdit) document.getElementById('tdDelete').onclick = ()=>requireUnlock(async ()=>{
+    deleteTodo(t.id);
+    await saveState(); closeModal(); render();
+  });
+  document.getElementById('tdSave').onclick = async ()=>{
+    const title = document.getElementById('tdTitle').value.trim();
+    if(!title){ toast('Give the to-do a name.', 'error'); return; }
+    const data = {
+      id: t.id || uid(),
+      listId: document.getElementById('tdList').value,
+      title,
+      notes: document.getElementById('tdNotes').value.trim(),
+      due: document.getElementById('tdDue').value,
+      priority: Number(document.getElementById('tdPriority').value) || 0,
+      flagged: !!t.flagged,
+      personIds: fam.checked ? [] : ppl.filter(c=>c.checked).map(c=>c.value),
+      points: Math.max(0, Number(document.getElementById('tdPoints').value) || 0),
+      parentId: t.parentId || null,
+      done: !!t.done,
+      order: typeof t.order === 'number' ? t.order : state.todos.items.length
+    };
+    if(isEdit){
+      const i = state.todos.items.findIndex(x=>x.id===t.id);
+      state.todos.items[i] = data;
+    } else {
+      state.todos.items.push(data);
+    }
+    await saveState(); closeModal(); render();
+  };
+}
+function deleteTodo(id){
+  /* Removing a parent takes its sub-tasks with it — an orphaned sub-task has
+     nothing to indent under. */
+  state.todos.items = state.todos.items.filter(t=>t.id!==id && t.parentId!==id);
+}
+
+/* Completing a to-do has to land its points on a real person. An item assigned
+   to one person is unambiguous; a family item could have been done by anyone,
+   so it asks rather than guessing or silently dropping the points. */
+function completeTodo(t){
+  const finish = async (personId)=>{
+    t.done = true;
+    t.doneAt = todayStr();
+    t.awardedTo = personId || null;
+    if(personId && t.points) addPoints(personId, t.points);
+    await saveState(); render();
+    if(personId && t.points) toast(`${personById(personId).name} earned ${t.points} point${t.points===1?'':'s'} ⭐`, 'success');
+  };
+  const assigned = (t.personIds||[]).filter(id=>personById(id));
+  if(!t.points){ finish(assigned[0] || null); return; }
+  if(assigned.length === 1){ finish(assigned[0]); return; }
+
+  const choices = assigned.length ? assigned : state.people.map(p=>p.id);
+  openModal(`
+    <h3>Who finished it?</h3>
+    <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">"${escapeHtml(t.title)}" is worth ${t.points} point${t.points===1?'':'s'}.</p>
+    <div class="who-picker">
+      ${choices.map(id=>{ const p = personById(id); return `
+        <button class="who-opt" data-todowho="${id}" style="cursor:pointer;">${avatarHtml(p,'sm')}<span>${escapeHtml(p.name)}</span></button>`; }).join('')}
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="tdWhoSkip">No points, just mark done</button>
+    </div>
+  `);
+  document.querySelectorAll('[data-todowho]').forEach(b=>b.onclick = ()=>{ closeModal(); finish(b.dataset.todowho); });
+  document.getElementById('tdWhoSkip').onclick = ()=>{ closeModal(); finish(null); };
+}
+function todoListModal(){
+  openModal(`
+    <h3>New list</h3>
+    <div class="field"><label>Name</label><input id="tlName" placeholder="Groceries"></div>
+    <div class="field"><label>Emoji (optional)</label><input id="tlEmoji" maxlength="2" placeholder="🛒"></div>
+    <div class="field"><label>Colour</label>
+      <div class="swatches" id="tlSwatches">${PALETTE.map((c,i)=>`<div class="swatch ${i===0?'selected':''}" style="background:${c.hex};" data-tlcolor="${c.hex}" title="${c.name}"></div>`).join('')}</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="tlCancel">Cancel</button>
+      <button class="btn btn-primary" id="tlSave">Save</button>
+    </div>
+  `);
+  let color = PALETTE[0].hex;
+  document.querySelectorAll('[data-tlcolor]').forEach(sw=>sw.onclick = ()=>{
+    color = sw.dataset.tlcolor;
+    document.querySelectorAll('[data-tlcolor]').forEach(s=>s.classList.toggle('selected', s===sw));
+  });
+  document.getElementById('tlCancel').onclick = closeModal;
+  document.getElementById('tlSave').onclick = async ()=>{
+    const name = document.getElementById('tlName').value.trim();
+    if(!name){ toast('Give the list a name.', 'error'); return; }
+    const id = uid();
+    state.todos.lists.push({id, name, color, emoji: document.getElementById('tlEmoji').value.trim()});
+    state.todoView.listId = id;
+    await saveState(); closeModal(); render();
+  };
+}
+
+/* ============================= REWARDS =============================
+   Anything created in Chores, To-Dos or Habits shows up here automatically under
+   the person it belongs to, so each person can see exactly what's available to
+   earn and what it's worth. Nothing has to be re-entered on this tab. */
+function earnRowsFor(personId){
+  const rows = [];
+  state.chores.filter(c=>c.personId===personId).forEach(c=>rows.push({
+    kind:'Chore', icon:'✅', name:c.name, points:c.points||0, done:!!c.done
+  }));
+  state.todos.items.filter(t=>!t.parentId && (t.personIds||[]).includes(personId)).forEach(t=>rows.push({
+    kind:'To-do', icon:'📝', name:t.title, points:t.points||0, done:!!t.done
+  }));
+  state.habits.items.filter(h=>h.personId===personId).forEach(h=>rows.push({
+    kind: h.type==='weekly' ? 'Habit (weekly)' : 'Habit (daily)', icon:'🌱', name:h.name, points:h.points||0, done:false
+  }));
+  return rows;
+}
+function familyEarnRows(){
+  return state.todos.items
+    .filter(t=>!t.parentId && !(t.personIds||[]).length)
+    .map(t=>({kind:'To-do', icon:'📝', name:t.title, points:t.points||0, done:!!t.done}));
+}
+function earnTableHtml(rows){
+  if(!rows.length) return `<div style="font-size:12.5px; color:var(--ink-soft); padding:6px 2px;">Nothing assigned yet.</div>`;
+  return rows.map(r=>`
+    <div class="earn-row ${r.done?'is-done':''}">
+      <span class="earn-icon">${r.icon}</span>
+      <span class="earn-name">${escapeHtml(r.name)}</span>
+      <span class="earn-kind">${r.kind}</span>
+      <span class="earn-pts">${r.points ? '+'+r.points : '—'}</span>
+    </div>`).join('');
+}
 function renderRewards(){
   const strip = state.people.map(p=>`<div class="points-card" style="background:${p.color}; color:${p.text||'#fff'};"><div class="head">${avatarHtml(p)}<span class="lbl">${escapeHtml(p.name)}'s points</span></div><div class="num mono">${pointsFor(p.id)}</div></div>`).join('');
+
+  const earnCards = state.people.map(p=>{
+    const rows = earnRowsFor(p.id);
+    const open = rows.filter(r=>!r.done);
+    const available = open.reduce((s,r)=>s+r.points, 0);
+    return `<div class="earn-card">
+        <div class="earn-head" style="background:${p.color}; color:${p.text||'#fff'};">
+          <span style="display:flex; align-items:center; gap:8px;">${avatarHtml(p,'sm')}${escapeHtml(p.name)}</span>
+          <span class="mono" style="font-size:12px;">${available} pts available</span>
+        </div>
+        <div class="earn-body">${earnTableHtml(rows)}</div>
+      </div>`;
+  }).join('');
+
+  const famRows = familyEarnRows();
+  const famCard = famRows.length ? `<div class="earn-card">
+      <div class="earn-head" style="background:var(--board); color:#fff;">
+        <span style="display:flex; align-items:center; gap:8px;"><span class="dot" style="background:#fff;"></span>${escapeHtml(familyLabel())}</span>
+        <span class="mono" style="font-size:12px;">${famRows.filter(r=>!r.done).reduce((s,r)=>s+r.points,0)} pts available</span>
+      </div>
+      <div class="earn-body">${earnTableHtml(famRows)}</div>
+    </div>` : '';
+
   const rewards = state.rewards.map(r=>`
     <div class="reward-item">
       <div><div class="name">${escapeHtml(r.name)}</div><div class="cost">${r.cost} points &nbsp;·&nbsp; <span style="cursor:pointer;text-decoration:underline;" data-delreward="${r.id}">remove</span></div></div>
@@ -1847,9 +2295,16 @@ function renderRewards(){
         ${state.people.map(p=>`<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}
       </select>
     </div>`).join('') || `<div class="empty">No rewards yet — add one below 🎁</div>`;
+
   return `<div class="card">
       <div class="section-title"><h2>Rewards</h2><button class="btn btn-mustard" id="addRewardBtn">+ Add reward</button></div>
       <div class="points-strip">${strip}</div>
+
+      <h3 style="font-size:15px; margin-bottom:2px;">Ways to earn</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:0;">Every chore, to-do and habit appears here automatically under whoever it's assigned to.</p>
+      <div class="earn-grid">${earnCards}${famCard}</div>
+
+      <h3 style="font-size:15px; margin:18px 0 8px;">Spend points on</h3>
       ${rewards}
     </div>`;
 }
@@ -3140,8 +3595,7 @@ function attachHandlers(){
   }));
 
   // Habits
-  const addDailyHabit = document.getElementById('addDailyHabitBtn');
-  if(addDailyHabit) addDailyHabit.onclick = ()=>habitModal('daily');
+  const addDailyHabit = document.getElementById('addDailyHabitBtn');  if(addDailyHabit) addDailyHabit.onclick = ()=>habitModal('daily');
   const addWeeklyHabit = document.getElementById('addWeeklyHabitBtn');
   if(addWeeklyHabit) addWeeklyHabit.onclick = ()=>habitModal('weekly');
   const habitPrev = document.getElementById('habitPrev');
@@ -3157,8 +3611,13 @@ function attachHandlers(){
     const habit = state.habits.items.find(h=>h.id===b.dataset.habit);
     if(!habit) return;
     const key = habitLogKey(habit, parseDate(b.dataset.habitdate));
-    if(state.habits.log[key]) delete state.habits.log[key];
-    else state.habits.log[key] = true;
+    if(state.habits.log[key]){
+      delete state.habits.log[key];
+      addPoints(habit.personId, -(habit.points||0));
+    } else {
+      state.habits.log[key] = true;
+      addPoints(habit.personId, habit.points||0);
+    }
     saveState(); render();
   });
   document.querySelectorAll('[data-delhabit]').forEach(b=>b.onclick = (e)=>{
@@ -3171,6 +3630,73 @@ function attachHandlers(){
       saveState(); render();
     });
   });
+
+  // To-Dos
+  const addTodoBtn = document.getElementById('addTodoBtn');
+  if(addTodoBtn) addTodoBtn.onclick = ()=>todoModal(null, todoView().listId);
+  const addTodoListBtn = document.getElementById('addTodoListBtn');
+  if(addTodoListBtn) addTodoListBtn.onclick = todoListModal;
+  document.querySelectorAll('[data-todoview]').forEach(el=>el.onclick = ()=>{
+    todoView().listId = el.dataset.todoview; saveState(); render();
+  });
+  const todoSort = document.getElementById('todoSort');
+  if(todoSort) todoSort.onchange = ()=>{ todoView().sort = todoSort.value; saveState(); render(); };
+  const todoShowCompleted = document.getElementById('todoShowCompleted');
+  if(todoShowCompleted) todoShowCompleted.onchange = ()=>{
+    todoView().showCompleted = todoShowCompleted.checked; saveState(); render();
+  };
+  const todoClear = document.getElementById('todoClearCompleted');
+  if(todoClear) todoClear.onclick = ()=>requireUnlock(async ()=>{
+    const before = state.todos.items.length;
+    state.todos.items = state.todos.items.filter(t=>!t.done);
+    await saveState(); render();
+    toast(`Cleared ${before - state.todos.items.length} completed to-do${before-state.todos.items.length===1?'':'s'}.`, 'success');
+  });
+  document.querySelectorAll('[data-todotoggle]').forEach(b=>b.onclick = ()=>{
+    const t = state.todos.items.find(x=>x.id===b.dataset.todotoggle);
+    if(!t) return;
+    if(t.done){                       // un-completing always just takes the points back
+      t.done = false;
+      if(t.awardedTo){ addPoints(t.awardedTo, -(t.points||0)); t.awardedTo = null; }
+      saveState(); render();
+      return;
+    }
+    completeTodo(t);
+  });
+  document.querySelectorAll('[data-todoflag]').forEach(b=>b.onclick = ()=>{
+    const t = state.todos.items.find(x=>x.id===b.dataset.todoflag);
+    if(t){ t.flagged = !t.flagged; saveState(); render(); }
+  });
+  document.querySelectorAll('[data-todoedit]').forEach(b=>b.onclick = ()=>{
+    const t = state.todos.items.find(x=>x.id===b.dataset.todoedit);
+    if(t) todoModal(t);
+  });
+  document.querySelectorAll('[data-todosub]').forEach(b=>b.onclick = ()=>{
+    const parent = state.todos.items.find(x=>x.id===b.dataset.todosub);
+    if(parent) todoModal(null, parent.listId, parent.id);
+  });
+  document.querySelectorAll('[data-tododel]').forEach(b=>b.onclick = ()=>requireUnlock(async ()=>{
+    deleteTodo(b.dataset.tododel);
+    await saveState(); render();
+  }));
+  const quickAdd = document.getElementById('todoQuickAdd');
+  const quickAddBtn = document.getElementById('todoQuickAddBtn');
+  if(quickAdd && quickAddBtn){
+    const add = async ()=>{
+      const title = quickAdd.value.trim();
+      if(!title) return;
+      state.todos.items.push({
+        id:uid(), listId: quickAddBtn.dataset.list, title, notes:'', due:'', priority:0,
+        flagged:false, personIds:[], points:0, parentId:null, done:false, order: state.todos.items.length
+      });
+      quickAdd.value = '';
+      await saveState(); render();
+      const again = document.getElementById('todoQuickAdd');
+      if(again) again.focus();       // keep typing, the way Reminders does
+    };
+    quickAddBtn.onclick = add;
+    quickAdd.onkeydown = e=>{ if(e.key==='Enter') add(); };
+  }
 
   // Rewards
   const addRewardBtn = document.getElementById('addRewardBtn');
