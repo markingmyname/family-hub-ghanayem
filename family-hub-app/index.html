@@ -184,14 +184,16 @@
   .day-event .t{font-family:'JetBrains Mono'; font-size:10px; color:var(--ink-soft); display:block;}
 
   /* ---------- Chores ---------- */
-  .chore-grid{display:grid; gap:10px;}
-  .chore-person-col{background:#fff; border-radius:10px; border:1px solid var(--line); overflow:hidden;}
-  .chore-person-head{padding:10px 12px; font-weight:700; display:flex; justify-content:space-between; align-items:center; gap:8px;}
+  /* One column per person, side by side — wraps to fewer columns as space runs out.
+     align-items:start keeps a short list from stretching to the tallest card. */
+  .chore-grid{display:grid; gap:10px; grid-template-columns:repeat(auto-fit, minmax(230px, 1fr)); align-items:start;}
+  .chore-person-col{background:#fff; border-radius:10px; border:1px solid var(--line); overflow:hidden; min-width:0;}
+  .chore-person-head{padding:10px 12px; font-weight:700; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;}
   .chore-list-label{font-size:11px; font-weight:700; text-transform:uppercase; color:var(--ink-soft); padding:10px 12px 2px 12px;}
-  .chore-row{padding:9px 12px; border-top:1px solid var(--line); display:flex; align-items:center; gap:10px;}
+  .chore-row{padding:9px 12px; border-top:1px solid var(--line); display:flex; align-items:center; gap:10px; min-width:0;}
   .chore-check{width:24px; height:24px; border-radius:7px; border:2px solid var(--line); background:#fff; cursor:pointer; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:14px; color:#fff;}
   .chore-check.checked{background:var(--good); border-color:var(--good);}
-  .chore-row .name{font-size:13px; font-weight:600; flex:1;}
+  .chore-row .name{font-size:13px; font-weight:600; flex:1; min-width:0; overflow-wrap:anywhere;}
   .chore-row.completed .name{text-decoration:line-through; color:var(--ink-soft);}
   .pts-tag{font-size:11px; color:var(--ink-soft); font-weight:700; white-space:nowrap;}
   .chore-del{background:transparent; border:none; color:var(--ink-soft); cursor:pointer; font-size:15px;}
