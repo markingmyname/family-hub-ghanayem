@@ -736,14 +736,26 @@ function dayShiftMark(dateStr, timeStr, targetTz, sourceTz){
 function fmtEventTime(e, opts={}){
   if(!e.time) return '';
   const tz = tzSettings();
-  if(!tz.enabled) return fmtTime(e.time);
-  const primary = fmtTimeInZone(e.date, e.time, tz.primary, tz.primary);
-  const secondary = fmtTimeInZone(e.date, e.time, tz.secondary, tz.primary)
-    + dayShiftMark(e.date, e.time, tz.secondary, tz.primary);
+  const range = (a, b) => b ? `${a} – ${b}` : a;
+  if(!tz.enabled) return range(fmtTime(e.time), e.endTime ? fmtTime(e.endTime) : '');
+  const primary = range(
+    fmtTimeInZone(e.date, e.time, tz.primary, tz.primary),
+    e.endTime ? fmtTimeInZone(e.date, e.endTime, tz.primary, tz.primary) : ''
+  );
+  const secondary = range(
+    fmtTimeInZone(e.date, e.time, tz.secondary, tz.primary),
+    e.endTime ? fmtTimeInZone(e.date, e.endTime, tz.secondary, tz.primary) : ''
+  ) + dayShiftMark(e.date, e.time, tz.secondary, tz.primary);
   if(opts.withLabels){
     return `${primary} ${tzLabel(tz.primary, tz.primaryLabel)} · ${secondary} ${tzLabel(tz.secondary, tz.secondaryLabel)}`;
   }
   return `${primary} / ${secondary}`;
+}
+/* Compact form for tight spots like month chips, where only the start fits. */
+function fmtEventStart(e){
+  if(!e.time) return '';
+  const tz = tzSettings();
+  return tz.enabled ? fmtTimeInZone(e.date, e.time, tz.primary, tz.primary) : fmtTime(e.time);
 }
 function tzOptionsHtml(selected){
   let zones = [];
@@ -940,6 +952,9 @@ function migrateState(s){
      the event belongs to the whole family (the catch-all calendar). */
   (s.events||[]).forEach(e=>{
     if(!Array.isArray(e.personIds)) e.personIds = e.personId ? [e.personId] : [];
+    /* An empty start time has always meant all-day; endTime is simply absent on
+       anything created before end times existed. */
+    if(e.endTime === undefined) e.endTime = '';
   });
   return s;
 }
@@ -1437,7 +1452,7 @@ function monthChipHtml(e){
   }
   return `<div class="month-chip timed" style="--chip-color:${color}; --chip-text:${text};" data-editevent="${e.id}" title="${tip}">
     <span class="chip-dot" style="background:${color};"></span>
-    <span class="chip-time">${fmtTime(e.time)}</span>
+    <span class="chip-time">${fmtEventStart(e)}</span>
     <span class="chip-title">${label}</span></div>`;
 }
 function renderWeekGrid(d){
@@ -1482,8 +1497,7 @@ function renderDayTimeline(ds, events){
         <div class="tl-hour">${hourLabel(h)}</div>
         <div class="tl-events">${inHour.map(e=>`
           <div class="tl-pill" data-editevent="${e.id}" style="background:${eventColor(e)}; color:${eventTextColor(e)};" title="${escapeHtml(eventPeopleLabel(e))}">
-            <span class="tl-time">${fmtEventTime(e)}</span>
-            <span class="tl-title">${escapeHtml(e.title)}</span>
+            <span class="tl-time">${fmtEventTime(e)}</span>            <span class="tl-title">${escapeHtml(e.title)}</span>
           </div>`).join('')}</div>
       </div>`);
   }
@@ -1602,7 +1616,19 @@ function eventModal(existing, presetDate){
     <div class="field"><label>Title</label><input id="evTitle" value="${escapeHtml(ev.title)}" placeholder="Soccer practice"></div>
     <div class="field"><label>Date</label><input type="date" id="evDate" value="${ev.date}">
       ${inSeries?`<div id="evDateNote" style="display:none; font-size:12px; color:var(--ink-soft); margin-top:4px;">Each event keeps its own date when you edit the whole series.</div>`:''}</div>
-    <div class="field"><label>Time (optional)</label><input type="time" id="evTime" value="${ev.time}"></div>
+    <div class="field" style="display:flex; align-items:center; gap:8px;">
+      <input type="checkbox" id="evAllDay" style="width:18px;height:18px;" ${!ev.time?'checked':''}>
+      <label style="margin:0;">All day</label>
+    </div>
+    <div class="field" id="evTimeWrap" style="${!ev.time?'display:none;':''}">
+      <label>Start and end</label>
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <input type="time" id="evTime" value="${ev.time||''}" style="width:auto;">
+        <span style="color:var(--ink-soft);">to</span>
+        <input type="time" id="evEndTime" value="${ev.endTime||''}" style="width:auto;">
+      </div>
+      <div id="evTimeNote" style="font-size:12px; color:var(--ink-soft); margin-top:4px;"></div>
+    </div>
     ${repeatBlock}
     ${serviceChecks}
     <div class="modal-actions">
@@ -1612,6 +1638,39 @@ function eventModal(existing, presetDate){
     </div>
   `);
   document.getElementById('evCancel').onclick = closeModal;
+
+  /* All-day and a timed range are mutually exclusive. Picking a start with no
+     end quietly suggests an hour later, which is what most events turn out to be. */
+  const allDay = document.getElementById('evAllDay');
+  const startEl = document.getElementById('evTime');
+  const endEl = document.getElementById('evEndTime');
+  const timeNote = document.getElementById('evTimeNote');
+  const syncTimeUi = ()=>{
+    document.getElementById('evTimeWrap').style.display = allDay.checked ? 'none' : '';
+    if(allDay.checked){ timeNote.textContent = ''; return; }
+    if(!startEl.value){ timeNote.textContent = 'Pick a start time, or tick All day.'; return; }
+    timeNote.textContent = (endEl.value && endEl.value < startEl.value)
+      ? 'Ends before it starts — treated as running past midnight.'
+      : '';
+  };
+  allDay.onchange = ()=>{
+    if(allDay.checked){ startEl.value = ''; endEl.value = ''; }
+    else if(!startEl.value){
+      const now = new Date();
+      startEl.value = String(now.getHours()).padStart(2,'0')+':00';
+      endEl.value = String((now.getHours()+1)%24).padStart(2,'0')+':00';
+    }
+    syncTimeUi();
+  };
+  startEl.onchange = ()=>{
+    if(startEl.value && !endEl.value){
+      const [h,m] = startEl.value.split(':').map(Number);
+      endEl.value = String((h+1)%24).padStart(2,'0')+':'+String(m).padStart(2,'0');
+    }
+    syncTimeUi();
+  };
+  endEl.onchange = syncTimeUi;
+  syncTimeUi();
 
   /* Family and individuals are mutually exclusive: picking people clears the
      family box, and ticking family clears the people. */
@@ -1709,12 +1768,13 @@ function eventModal(existing, presetDate){
     if(!title){ toast('Give the event a title.', 'error'); return; }
     const personIds = readWho();
     const date = document.getElementById('evDate').value;
-    const time = document.getElementById('evTime').value;
+    const time = allDay.checked ? '' : document.getElementById('evTime').value;
+    const endTime = (allDay.checked || !time) ? '' : document.getElementById('evEndTime').value;
 
     /* ---- Edit applied to the whole series ---- */
     if(inSeries && scopeValue()==='all'){
       const members = seriesMembers(ev.seriesId);
-      members.forEach(m=>{ m.title = title; m.personIds = personIds.slice(); m.time = time; });
+      members.forEach(m=>{ m.title = title; m.personIds = personIds.slice(); m.time = time; m.endTime = endTime; });
       const errs = [];
       for(const s of services){
         const masterId = ev[s.seriesField];
@@ -1735,7 +1795,7 @@ function eventModal(existing, presetDate){
         const seriesId = uid();
         const rule = {freq: rec.freq, count: dates.length};
         const instances = dates.map((d, i)=>({
-          id: uid(), personIds: personIds.slice(), title, date: d, time,
+          id: uid(), personIds: personIds.slice(), title, date: d, time, endTime,
           source: undefined, seriesId, seriesRule: rule, seriesIndex: i
         }));
         const errs = [];
@@ -1758,7 +1818,7 @@ function eventModal(existing, presetDate){
     /* ---- Single event (or one instance of a series) ---- */
     const data = {
       id: ev.id || uid(),
-      personIds, title, date, time,
+      personIds, title, date, time, endTime,
       source: ev.source,
       googleId: ev.googleId,
       graphId: ev.graphId,
@@ -3036,7 +3096,8 @@ function exportIcs(personId){
   events.forEach(e=>{
     const dt = e.date.replace(/-/g,'');
     const startT = e.time ? e.time.replace(':','')+'00' : '090000';
-    const endHour = e.time ? String((parseInt(e.time.slice(0,2))+1)%24).padStart(2,'0')+e.time.slice(2,5).replace(':','')+'00' : '100000';
+    const endClock = e.time ? (e.endTime || String((parseInt(e.time.slice(0,2),10)+1)%24).padStart(2,'0')+e.time.slice(2,5)) : '10:00';
+    const endHour = endClock.replace(':','')+'00';
     const summary = eventPeopleLabel(e)+': '+e.title;
     ics += 'BEGIN:VEVENT\r\n';
     ics += `UID:${e.id}@familyhub\r\n`;
@@ -3115,9 +3176,10 @@ const outlookSync = {
     return res.json();
   },
   _parseStart(ev){
-    if(ev.isAllDay){ return {date:(ev.start.dateTime||'').slice(0,10), time:''}; }
+    if(ev.isAllDay){ return {date:(ev.start.dateTime||'').slice(0,10), time:'', endTime:''}; }
     const dt = ev.start.dateTime || '';
-    return {date: dt.slice(0,10), time: dt.slice(11,16)};
+    const endDt = (ev.end && ev.end.dateTime) || '';
+    return {date: dt.slice(0,10), time: dt.slice(11,16), endTime: endDt.slice(11,16)};
   },
   _toGraph(e){
     if(!e.time){
@@ -3125,8 +3187,14 @@ const outlookSync = {
       return { subject:e.title, isAllDay:true, start:{dateTime:e.date+'T00:00:00', timeZone:this.tz}, end:{dateTime:fmtDate(next)+'T00:00:00', timeZone:this.tz} };
     }
     const [h,m] = e.time.split(':').map(Number);
-    const endH = String((h+1)%24).padStart(2,'0');
-    return { subject:e.title, start:{dateTime:e.date+'T'+e.time+':00', timeZone:this.tz}, end:{dateTime:e.date+'T'+endH+':'+String(m).padStart(2,'0')+':00', timeZone:this.tz} };
+    const endClock = e.endTime || String((h+1)%24).padStart(2,'0')+':'+String(m).padStart(2,'0');
+    let endDate = e.date;
+    if(endClock <= e.time){
+      const nd = new Date(parseDate(e.date)); nd.setDate(nd.getDate()+1); endDate = fmtDate(nd);
+    }
+    return { subject:e.title,
+      start:{dateTime:e.date+'T'+e.time+':00', timeZone:this.tz},
+      end:{dateTime:endDate+'T'+endClock+':00', timeZone:this.tz} };
   },
   async pull(personId){
     const start = new Date(); start.setDate(start.getDate()-30);
@@ -3148,12 +3216,12 @@ const outlookSync = {
       }
       if(existing){
         if(masterId && !existing.seriesGraphId) existing.seriesGraphId = masterId;
-        existing.title=title; existing.date=parsed.date; existing.time=parsed.time; updated++;
+        existing.title=title; existing.date=parsed.date; existing.time=parsed.time; existing.endTime=parsed.endTime; updated++;
       }
       else {
         const sibling = masterId ? state.events.find(x=>x.seriesGraphId===masterId) : null;
         state.events.push({
-          id:uid(), personIds: personId ? [personId] : [], title, date:parsed.date, time:parsed.time, source:'outlook', graphId:ev.id,
+          id:uid(), personIds: personId ? [personId] : [], title, date:parsed.date, time:parsed.time, endTime:parsed.endTime, source:'outlook', graphId:ev.id,
           seriesId: masterId ? (sibling ? sibling.seriesId : uid()) : undefined,
           seriesGraphId: masterId || undefined,
           seriesRule: sibling ? sibling.seriesRule : undefined
@@ -3364,12 +3432,16 @@ const googleSync = {
     return res.json();
   },
   _parseStart(ev){
-    if(ev.start && ev.start.date){ return {date: ev.start.date, time:''}; }
+    if(ev.start && ev.start.date){ return {date: ev.start.date, time:'', endTime:''}; }
     const dt = ev.start && ev.start.dateTime;
-    if(!dt) return {date:'', time:''};
+    if(!dt) return {date:'', time:'', endTime:''};
     const d = new Date(dt);
-    if(isNaN(d)) return {date:'', time:''};
-    return { date: fmtDate(d), time: String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0') };
+    if(isNaN(d)) return {date:'', time:'', endTime:''};
+    const hhmm = x => String(x.getHours()).padStart(2,'0')+':'+String(x.getMinutes()).padStart(2,'0');
+    let endTime = '';
+    const endDt = ev.end && ev.end.dateTime;
+    if(endDt){ const de = new Date(endDt); if(!isNaN(de)) endTime = hhmm(de); }
+    return { date: fmtDate(d), time: hhmm(d), endTime };
   },
   async pull(personId){
     /* Prefer OAuth when it's available; fall back to the read-only API key. */
@@ -3401,14 +3473,14 @@ const googleSync = {
       }
       if(existing){
         if(masterId && !existing.seriesGoogleId) existing.seriesGoogleId = masterId;
-        if(existing.title!==title || existing.date!==parsed.date || existing.time!==parsed.time){
-          existing.title=title; existing.date=parsed.date; existing.time=parsed.time; updated++;
+        if(existing.title!==title || existing.date!==parsed.date || existing.time!==parsed.time || existing.endTime!==parsed.endTime){
+          existing.title=title; existing.date=parsed.date; existing.time=parsed.time; existing.endTime=parsed.endTime; updated++;
         }
       }
       else {
         const sibling = masterId ? state.events.find(x=>x.seriesGoogleId===masterId) : null;
         state.events.push({
-          id:uid(), personIds: personId ? [personId] : [], title, date:parsed.date, time:parsed.time, source:'google', googleId:ev.id,
+          id:uid(), personIds: personId ? [personId] : [], title, date:parsed.date, time:parsed.time, endTime:parsed.endTime, source:'google', googleId:ev.id,
           seriesId: masterId ? (sibling ? sibling.seriesId : uid()) : undefined,
           seriesGoogleId: masterId || undefined,
           seriesRule: sibling ? sibling.seriesRule : undefined
@@ -3433,9 +3505,17 @@ const googleSync = {
       const next = new Date(parseDate(e.date)); next.setDate(next.getDate()+1);
       return { summary:e.title, start:{date:e.date}, end:{date:fmtDate(next)} };
     }
+    /* Fall back to an hour long only when no end time was given. An end earlier
+       than the start means it runs past midnight, so the end lands on the next day. */
     const [h,m] = e.time.split(':').map(Number);
-    const endH = String((h+1)%24).padStart(2,'0');
-    return { summary:e.title, start:{dateTime:e.date+'T'+e.time+':00', timeZone:this.tz}, end:{dateTime:e.date+'T'+endH+':'+String(m).padStart(2,'0')+':00', timeZone:this.tz} };
+    const endClock = e.endTime || String((h+1)%24).padStart(2,'0')+':'+String(m).padStart(2,'0');
+    let endDate = e.date;
+    if(endClock <= e.time){
+      const nd = new Date(parseDate(e.date)); nd.setDate(nd.getDate()+1); endDate = fmtDate(nd);
+    }
+    return { summary:e.title,
+      start:{dateTime:e.date+'T'+e.time+':00', timeZone:this.tz},
+      end:{dateTime:endDate+'T'+endClock+':00', timeZone:this.tz} };
   },
   _requireWrite(){
     if(!this.canWrite()) throw new Error('Read-only mode — connect with Google sign-in to write events back.');
