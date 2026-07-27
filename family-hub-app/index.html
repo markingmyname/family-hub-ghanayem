@@ -204,6 +204,28 @@
   .day-event{background:var(--paper-2); border-radius:8px; padding:7px 8px; margin-bottom:6px; font-size:12px; cursor:pointer;}
   .day-event .t{font-family:'JetBrains Mono'; font-size:10px; color:var(--ink-soft); display:block;}
 
+  /* Hour-by-hour "whole day" column that leads the day view */
+  .day-timeline{flex:1.6; min-width:250px;}
+  .tl-allday{display:flex; flex-direction:column; gap:4px; padding-bottom:8px; margin-bottom:6px; border-bottom:1px dashed var(--line);}
+  .tl-row{display:flex; gap:8px; align-items:flex-start; border-top:1px solid var(--line); padding:3px 0; min-height:26px;}
+  .tl-row:first-of-type{border-top:none;}
+  .tl-hour{
+    font-family:'JetBrains Mono'; font-size:10.5px; color:var(--ink-soft);
+    width:52px; flex-shrink:0; padding-top:4px; text-align:right;
+  }
+  .tl-row.is-now{background:color-mix(in srgb, var(--mustard) 14%, transparent); border-radius:6px;}
+  .tl-row.is-now .tl-hour{color:#8a6400; font-weight:700;}
+  .tl-events{flex:1; min-width:0; display:flex; flex-direction:column; gap:4px;}
+  .tl-pill{
+    border-radius:7px; padding:5px 8px; font-size:12px; font-weight:600;
+    cursor:pointer; min-width:0; overflow-wrap:anywhere;
+  }
+  .tl-pill .tl-time{font-family:'JetBrains Mono'; font-size:10px; opacity:0.85; display:block;}
+  @media(max-width:640px){
+    .day-timeline{min-width:210px;}
+    .tl-hour{width:44px;}
+  }
+
   /* ---------- Chores ---------- */
   /* One column per person, side by side — wraps to fewer columns as space runs out.
      align-items:start keeps a short list from stretching to the tallest card. */
@@ -416,6 +438,31 @@
   .earn-kind{font-size:10.5px; color:var(--ink-soft); white-space:nowrap;}
   .earn-pts{font-family:'JetBrains Mono'; font-weight:700; font-size:12px; white-space:nowrap;}
 
+  /* ---------- Shared completed drawer ---------- */
+  .done-drawer{margin-top:18px; border-top:2px solid var(--line); padding-top:10px;}
+  .done-drawer-head{
+    display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none;
+    font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em;
+    color:var(--ink-soft); padding:4px 2px;
+  }
+  .done-drawer-head .caret{font-size:10px; width:10px;}
+  .done-drawer-head .cnt{font-family:'JetBrains Mono'; font-size:11px; text-transform:none;}
+  .done-drawer-body{padding-top:6px;}
+  .done-empty{font-size:12.5px; color:var(--ink-soft); padding:6px 2px;}
+  .done-row{
+    display:flex; align-items:center; gap:10px; padding:7px 2px;
+    border-bottom:1px solid var(--line); font-size:13px; min-width:0;
+  }
+  .done-row:last-child{border-bottom:none;}
+  .done-row .done-check{
+    width:20px; height:20px; border-radius:50%; border:none; background:var(--good);
+    color:#fff; font-size:11px; cursor:pointer; flex-shrink:0; padding:0;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .done-row .name{flex:1; min-width:0; text-decoration:line-through; color:var(--ink-soft); overflow-wrap:anywhere;}
+  .done-row .who{font-size:11px; color:var(--ink-soft); white-space:nowrap;}
+  .done-row .pts{font-family:'JetBrains Mono'; font-size:11px; color:var(--ink-soft); white-space:nowrap;}
+
   /* ---------- Settings / avatar picker ---------- */
   .swatch-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:8px; margin-bottom:6px;}
   .swatch{width:100%; aspect-ratio:1; border-radius:8px; cursor:pointer; border:3px solid transparent;}
@@ -566,6 +613,7 @@ function defaultState(){
       items: []
     },
     todoView: { listId:'all', sort:'manual', showCompleted:false, collapsed:{} },
+    completedOpen: { chores:false, todos:false, habits:false },
     outlook: { clientId: '' },
     google: { clientId: '640349356853-ljl8ljpfpktegj49f9f4kr1kkb6fngv2.apps.googleusercontent.com', calendarId: 'ac3601938b78b11f2849f0a53d25e7047d4c115a510dd7d02464bc8a72b60a85@group.calendar.google.com', apiKey: '', consented: false },
     pin: '1234',
@@ -877,6 +925,7 @@ function migrateState(s){
   });
   if(!s.todoView) s.todoView = { listId:'all', sort:'manual', showCompleted:false, collapsed:{} };
   if(!s.todoView.collapsed) s.todoView.collapsed = {};
+  if(!s.completedOpen) s.completedOpen = { chores:false, todos:false, habits:false };
   if(!s.habitMonth) s.habitMonth = monthStr(new Date());
   if(!s.habitPersonId) s.habitPersonId = (s.people && s.people[0] && s.people[0].id) || 'p1';
   if(s.timeFormat !== '24h') s.timeFormat = '12h';
@@ -940,6 +989,29 @@ async function saveState(){
 
 function personById(id){ return state.people.find(p=>p.id===id); }
 function pointsFor(id){ return state.points[id] || 0; }
+
+/* ---- Shared "Completed" drawer ----
+   Chores, To-Dos and Habits all park finished items in the same collapsible
+   block at the foot of their page, so the working list only ever shows what's
+   still outstanding. */
+function completedIsOpen(key){ return !!(state.completedOpen && state.completedOpen[key]); }
+function completedToggleHtml(key, count){
+  return `<button class="btn btn-ghost" data-completedtoggle="${key}" style="font-size:12px;">
+      ${completedIsOpen(key) ? 'Hide' : 'Show'} completed${count?` (${count})`:''}
+    </button>`;
+}
+function completedSectionHtml(key, count, rowsHtml, emptyNote){
+  if(!count) return '';
+  const open = completedIsOpen(key);
+  return `<div class="done-drawer">
+      <div class="done-drawer-head" data-completedtoggle="${key}">
+        <span class="caret">${open?'▼':'▶'}</span>
+        <span>Completed</span>
+        <span class="cnt">${count}</span>
+      </div>
+      ${open ? `<div class="done-drawer-body">${rowsHtml || `<div class="done-empty">${emptyNote||'Nothing completed yet.'}</div>`}</div>` : ''}
+    </div>`;
+}
 function addPoints(id, n){ state.points[id] = pointsFor(id) + n; }
 function budgetFor(id){ return state.budget.transactions.filter(t=>t.personId===id).reduce((sum,t)=>sum+t.amount,0); }
 
@@ -1245,10 +1317,7 @@ function renderCalendar(){
     state.people.map(p=>`<span class="person-chip ${state.calFilter===p.id?'active':''}" data-calfilter="${p.id}">${avatarHtml(p,'sm')}${escapeHtml(p.name)}</span>`).join('');
 
   const connectedNote = anyCalendarConnected()
-    ? `<div style="background:#e7f6e9; border:1px solid #bfe3c4; border-radius:10px; padding:8px 12px; margin-bottom:12px; font-size:12.5px; color:#1b5e20; display:flex; align-items:center; justify-content:space-between; gap:8px;">
-         <span>🟢 Live calendar connected${googleCount()||outlookCount()?` · ${googleCount()+outlookCount()} events pulled in`:''}</span>
-         <button class="btn btn-ghost" id="calSyncManage" style="font-size:12px; padding:5px 10px;">Manage</button>
-       </div>`
+    ? ''
     : `<div style="background:var(--paper-2); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:12px; font-size:13px; display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
          <span>📥 Auto-fill this calendar from Google or Outlook — connect it under <strong>Settings → Open calendar sync</strong>.</span>
        </div>`;
@@ -1386,6 +1455,48 @@ function renderWeekGrid(d){
   }
   return `<div class="week-grid">${cols}</div>`;
 }
+/* The day view leads with an hour-by-hour schedule of everything on that date,
+   so the whole day reads at a glance before you narrow down to one person. */
+function renderDayTimeline(ds, events){
+  const timed = events.filter(e=>e.time).sort((a,b)=>a.time.localeCompare(b.time));
+  const allDay = events.filter(e=>!e.time);
+  /* A sensible waking window by default, stretched to cover anything outside it
+     so an early flight or a late shift is never hidden. */
+  let startH = 7, endH = 21;
+  timed.forEach(e=>{
+    const h = parseInt(e.time.slice(0,2), 10);
+    if(!isNaN(h)){ startH = Math.min(startH, h); endH = Math.max(endH, h); }
+  });
+  const isToday = ds === todayStr();
+  const nowH = new Date().getHours();
+
+  const hourLabel = h => {
+    if(use24h()) return String(h).padStart(2,'0')+':00';
+    const suffix = h < 12 ? 'AM' : 'PM';
+    return `${h % 12 === 0 ? 12 : h % 12} ${suffix}`;
+  };
+  const rows = [];
+  for(let h = startH; h <= endH; h++){
+    const inHour = timed.filter(e=>parseInt(e.time.slice(0,2),10) === h);
+    rows.push(`<div class="tl-row ${isToday && h===nowH ? 'is-now' : ''}">
+        <div class="tl-hour">${hourLabel(h)}</div>
+        <div class="tl-events">${inHour.map(e=>`
+          <div class="tl-pill" data-editevent="${e.id}" style="background:${eventColor(e)}; color:${eventTextColor(e)};" title="${escapeHtml(eventPeopleLabel(e))}">
+            <span class="tl-time">${fmtEventTime(e)}</span>
+            <span class="tl-title">${escapeHtml(e.title)}</span>
+          </div>`).join('')}</div>
+      </div>`);
+  }
+  return `<div class="person-col day-timeline">
+      <div class="person-col-head"><span class="dot" style="background:var(--mustard);"></span>Whole day</div>
+      ${allDay.length ? `<div class="tl-allday">${allDay.map(e=>`
+        <div class="tl-pill" data-editevent="${e.id}" style="background:${eventColor(e)}; color:${eventTextColor(e)};" title="${escapeHtml(eventPeopleLabel(e))}">
+          <span class="tl-title">${escapeHtml(e.title)}</span>
+        </div>`).join('')}</div>` : ''}
+      ${timed.length ? rows.join('') : `<div style="font-size:12px;color:var(--ink-soft); padding:6px 2px;">Nothing scheduled by time.</div>`}
+    </div>`;
+}
+
 function renderDayColumns(d){
   const ds = fmtDate(d);
   const dayEvents = state.events.filter(e=>e.date===ds).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
@@ -1409,7 +1520,10 @@ function renderDayColumns(d){
         ${evs.map(item).join('') || emptyNote}
       </div>`;
   }).join('');
-  return `<div class="day-columns">${familyCol}${cols}</div>`;
+  /* The hour-by-hour column comes first and honours the current filter, so the
+     whole day is visible up front and narrows when you pick a person. */
+  const timeline = renderDayTimeline(ds, dayEvents.filter(e=>eventMatchesFilter(e, state.calFilter)));
+  return `<div class="day-columns">${timeline}${familyCol}${cols}</div>`;
 }
 
 function connectedCalServices(){
@@ -1677,7 +1791,6 @@ function renderChores(){
   const cols = state.people.map(p=>{
     const mine = state.chores.filter(c=>c.personId===p.id);
     const todo = mine.filter(c=>!c.done);
-    const done = mine.filter(c=>c.done);
     const todoRows = todo.map(c=>`
       <div class="chore-row">
         <button class="chore-check" data-chore="${c.id}"></button>
@@ -1685,13 +1798,6 @@ function renderChores(){
         <span class="pts-tag">${c.points} pt${c.points===1?'':'s'}</span>
         <button class="chore-del" data-delchore="${c.id}">✕</button>
       </div>`).join('') || `<div class="chore-row" style="color:var(--ink-soft); font-size:13px;">Nothing to do — nice! 🎉</div>`;
-    const doneRows = done.map(c=>`
-      <div class="chore-row completed">
-        <button class="chore-check checked" data-chore="${c.id}">✓</button>
-        <span class="name">${escapeHtml(c.name)}</span>
-        <span class="pts-tag">+${c.points}</span>
-        <button class="chore-del" data-delchore="${c.id}">✕</button>
-      </div>`).join('');
     return `<div class="chore-person-col">
         <div class="chore-person-head" style="background:${p.color}; color:${p.text||'#fff'};">
           <span style="display:flex; align-items:center; gap:8px;">${avatarHtml(p)} ${escapeHtml(p.name)}</span>
@@ -1699,12 +1805,29 @@ function renderChores(){
         </div>
         <div class="chore-list-label">To do</div>
         ${todoRows}
-        ${done.length ? `<div class="chore-list-label">Completed</div>${doneRows}` : ''}
+      </div>`;
+  }).join('');
+  const doneChores = state.chores.filter(c=>c.done);
+  const doneRows = doneChores.map(c=>{
+    const p = personById(c.personId);
+    return `<div class="done-row">
+        <button class="done-check" data-chore="${c.id}" title="Move back to to-do">✓</button>
+        <span class="name">${escapeHtml(c.name)}</span>
+        <span class="who">${p?escapeHtml(p.name):''}</span>
+        <span class="pts">+${c.points}</span>
+        <button class="chore-del" data-delchore="${c.id}">✕</button>
       </div>`;
   }).join('');
   return `<div class="card">
-      <div class="section-title"><h2>Chore chart</h2><span style="font-size:12px;color:var(--ink-soft);">Tap the checkbox when a chore's done — it moves to Completed and awards points</span></div>
+      <div class="section-title">
+        <h2>Chore chart</h2>
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <span style="font-size:12px;color:var(--ink-soft);">Tap the checkbox when a chore's done</span>
+          ${completedToggleHtml('chores', doneChores.length)}
+        </div>
+      </div>
       <div class="chore-grid">${cols}</div>
+      ${completedSectionHtml('chores', doneChores.length, doneRows)}
     </div>`;
 }
 function choreModal(personId){
@@ -1903,10 +2026,24 @@ function renderHabits(){
       </table>
     </div>` : `<div class="empty">No weekly habits yet — things like "clean the bathroom" fit well here 🧽</div>`;
 
+  /* The grid keeps every row so the month's history stays visible — removing a
+     habit the moment it's ticked would erase the very thing being tracked. The
+     drawer instead lists what's already done for today. */
+  const now = new Date();
+  const doneToday = [...daily, ...weekly].filter(h=>habitDone(h, now));
+  const doneTodayRows = doneToday.map(h=>`
+    <div class="done-row">
+      <button class="done-check" data-habit="${h.id}" data-habitdate="${today}" title="Untick for today">✓</button>
+      <span class="name">${escapeHtml(h.name)}</span>
+      <span class="who">${h.type==='weekly'?'this week':'today'}</span>
+      ${h.points?`<span class="pts">+${h.points}</span>`:''}
+    </div>`).join('');
+
   return `<div class="card">
       <div class="section-title">
         <h2>Habit tracker</h2>
         <div style="display:flex; gap:8px;">
+          ${completedToggleHtml('habits', doneToday.length)}
           <button class="btn btn-ghost" id="addWeeklyHabitBtn">+ Weekly habit</button>
           <button class="btn btn-mustard" id="addDailyHabitBtn">+ Daily habit</button>
         </div>
@@ -1926,6 +2063,7 @@ function renderHabits(){
       ${dailyTable}
       <div class="habit-sub">Weekly habits — one tick per week</div>
       ${weeklyTable}
+      ${completedSectionHtml('habits', doneToday.length, doneTodayRows, 'Nothing ticked off yet today.')}
     </div>`;
 }
 
@@ -2078,9 +2216,11 @@ function renderTodos(){
 
   const isSmart = ['all','today','scheduled','flagged'].includes(view.listId);
   const activeList = isSmart ? null : todoList(view.listId);
-  const inView = all.filter(t=>todoMatchesView(t, view.listId) && (view.showCompleted || !t.done));
+  /* The working list is always outstanding-only; anything finished drops into
+     the Completed drawer at the foot of the page. */
+  const inView = all.filter(t=>todoMatchesView(t, view.listId) && !t.done);
   const parents = inView.filter(t=>!t.parentId);
-  const childrenOf = id => sortTodos(all.filter(t=>t.parentId===id && (view.showCompleted || !t.done)), view.sort);
+  const childrenOf = id => sortTodos(all.filter(t=>t.parentId===id && !t.done), view.sort);
   const rowsFor = items => sortTodos(items, view.sort)
     .map(t=>todoRowHtml(t,false) + childrenOf(t.id).map(c=>todoRowHtml(c,true)).join('')).join('');
 
@@ -2114,6 +2254,18 @@ function renderTodos(){
   const titleColor = activeList ? activeList.color : 'var(--board)';
   const openCount = counts(view.listId);
 
+  /* Completed items are scoped to the same view, so switching lists doesn't show
+     someone else's finished work. */
+  const doneTodos = all.filter(t=>t.done && todoMatchesView(t, view.listId));
+  const doneRows = doneTodos.map(t=>`
+    <div class="done-row">
+      <button class="done-check" data-todotoggle="${t.id}" title="Mark not done">✓</button>
+      <span class="name">${escapeHtml(t.title)}</span>
+      <span class="who">${escapeHtml(todoWhoLabel(t))}</span>
+      ${t.points?`<span class="pts">+${t.points}</span>`:''}
+      <button class="chore-del" data-tododel="${t.id}">✕</button>
+    </div>`).join('');
+
   return `<div class="card">
       <div class="section-title">
         <h2>To-Dos</h2>
@@ -2133,11 +2285,8 @@ function renderTodos(){
             <select id="todoSort" style="width:auto;">
               ${TODO_SORTS.map(s=>`<option value="${s.key}" ${view.sort===s.key?'selected':''}>${s.label}</option>`).join('')}
             </select>
-            <label style="display:flex; align-items:center; gap:6px; margin:0; font-size:12px; cursor:pointer;">
-              <input type="checkbox" id="todoShowCompleted" ${view.showCompleted?'checked':''} style="width:15px;height:15px;margin:0;">
-              Show completed
-            </label>
             <span class="spacer"></span>
+            ${completedToggleHtml('todos', doneTodos.length)}
             <button class="btn btn-ghost" id="todoClearCompleted" style="font-size:12px;">Clear completed</button>
           </div>
           ${body}
@@ -2145,6 +2294,7 @@ function renderTodos(){
             <input id="todoQuickAdd" placeholder="Add a to-do and press Enter">
             <button class="btn btn-primary" id="todoQuickAddBtn" data-list="${addTarget}">Add</button>
           </div>
+          ${completedSectionHtml('todos', doneTodos.length, doneRows)}
         </div>
       </div>
     </div>`;
@@ -3756,13 +3906,18 @@ function renderGoogleBlock(){
 
 /* ============================= EVENT HANDLERS ============================= */
 function attachHandlers(){
+  /* Completed drawer toggle — shared by Chores, To-Dos and Habits. */
+  document.querySelectorAll('[data-completedtoggle]').forEach(el=>el.onclick = (e)=>{
+    e.stopPropagation();
+    const key = el.dataset.completedtoggle;
+    state.completedOpen[key] = !state.completedOpen[key];
+    saveState(); render();
+  });
   // Calendar
   const addEventBtn = document.getElementById('addEventBtn');
   if(addEventBtn) addEventBtn.onclick = ()=>eventModal(null, state.calDate);
   const syncBtn = document.getElementById('syncBtn');
   if(syncBtn) syncBtn.onclick = ()=>runCalendarSync(syncBtn);
-  const calSyncManage = document.getElementById('calSyncManage');
-  if(calSyncManage) calSyncManage.onclick = syncModal;
   document.querySelectorAll('[data-calview]').forEach(b=>b.onclick = ()=>{ state.calView = b.dataset.calview; saveState(); render(); });
   document.querySelectorAll('[data-calfilter]').forEach(b=>b.onclick = ()=>{ state.calFilter = b.dataset.calfilter; saveState(); render(); });
   const prev = document.getElementById('calPrev'), next = document.getElementById('calNext'), today = document.getElementById('calToday');
@@ -3881,8 +4036,7 @@ function attachHandlers(){
   const todoShowCompleted = document.getElementById('todoShowCompleted');
   if(todoShowCompleted) todoShowCompleted.onchange = ()=>{
     todoView().showCompleted = todoShowCompleted.checked; saveState(); render();
-  };
-  const todoClear = document.getElementById('todoClearCompleted');
+  };  const todoClear = document.getElementById('todoClearCompleted');
   if(todoClear) todoClear.onclick = ()=>requireUnlock(async ()=>{
     const before = state.todos.items.length;
     state.todos.items = state.todos.items.filter(t=>!t.done);
