@@ -3343,6 +3343,39 @@ async function googleAutoPull(){
     renderGoogleBlock();
   }catch(e){ /* stay quiet in the background; the panel shows real errors */ }
 }
+/* The Calendar tab's Sync button pulls straight from the connected calendars.
+   It only falls back to opening the sync panel when nothing is connected yet,
+   since at that point there's nothing to refresh — you need to set it up first. */
+async function runCalendarSync(btn){
+  const jobs = [];
+  if(googleSync.canRead())      jobs.push({label:'Google',  run:()=>googleSync.pull(googleSyncPersonId())});
+  if(outlookSync.isConnected()) jobs.push({label:'Outlook', run:()=>outlookSync.pull(googleSyncPersonId())});
+  if(!jobs.length){ syncModal(); return; }
+
+  const original = btn ? btn.innerHTML : '';
+  if(btn){ btn.disabled = true; btn.innerHTML = '⏳ Syncing…'; }
+  let added=0, updated=0, removed=0;
+  const errs = [];
+  for(const j of jobs){
+    try{
+      const r = await j.run();
+      added   += r.added   || 0;
+      updated += r.updated || 0;
+      removed += r.removed || 0;
+    }catch(e){ errs.push(`${j.label}: ${e.message}`); }
+  }
+  await saveState();
+  if(btn){ btn.disabled = false; btn.innerHTML = original; }
+  render();
+
+  if(errs.length){ toast(errs.join(' · '), 'error'); return; }
+  const bits = [];
+  if(added)   bits.push(`${added} new`);
+  if(updated) bits.push(`${updated} updated`);
+  if(removed) bits.push(`${removed} removed`);
+  toast(bits.length ? `Calendar synced — ${bits.join(', ')}.` : 'Calendar is already up to date.', 'success');
+}
+
 function startGoogleAutoSync(){
   if(googleAutoTimer) return;
   googleAutoTimer = setInterval(googleAutoPull, GOOGLE_POLL_MS);
@@ -3711,7 +3744,7 @@ function attachHandlers(){
   const addEventBtn = document.getElementById('addEventBtn');
   if(addEventBtn) addEventBtn.onclick = ()=>eventModal(null, state.calDate);
   const syncBtn = document.getElementById('syncBtn');
-  if(syncBtn) syncBtn.onclick = syncModal;
+  if(syncBtn) syncBtn.onclick = ()=>runCalendarSync(syncBtn);
   const calSyncManage = document.getElementById('calSyncManage');
   if(calSyncManage) calSyncManage.onclick = syncModal;
   document.querySelectorAll('[data-calview]').forEach(b=>b.onclick = ()=>{ state.calView = b.dataset.calview; saveState(); render(); });
