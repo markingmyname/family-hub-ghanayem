@@ -1058,6 +1058,14 @@ const CLOUD_PUSH_MS    = 700;    // debounce, so a burst of edits is one write
    be looking at — maddening rather than helpful. */
 const DEVICE_LOCAL_KEYS = ['calView','calDate','calFilter','habitMonth','habitPersonId','todoView','completedOpen'];
 
+/* This household's own project, prefilled so setting up the next phone is one
+   tap rather than a hunt through a dashboard. Both values are the public pair:
+   the URL is just an address, and a publishable key is designed to ship inside
+   client code. Anyone running their own copy can overwrite both in the panel.
+   What is NOT here — and must never be — is a secret or service_role key. */
+const DEFAULT_CLOUD_URL = 'https://seehonmftkpbxemzehmc.supabase.co';
+const DEFAULT_CLOUD_KEY = 'sb_publishable_kk18vKFswmp3Q8woTnBv_Q_ifFS3qLb';
+
 function deviceId(){
   let id = null;
   try{ id = localStorage.getItem(CLOUD_DEVICE_KEY); }catch(e){}
@@ -4233,21 +4241,11 @@ function renderCloudBlock(){
 
   const form = (!on || cloudFormOpen) ? `
     <div style="border:1px solid var(--line, rgba(0,0,0,0.12)); border-radius:10px; padding:10px 12px; margin:10px 0 0;">
-      <p style="font-size:12.5px; margin:0 0 8px;"><strong>Three steps, about five minutes — once for the whole house</strong></p>
+      <p style="font-size:12.5px; margin:0 0 8px;"><strong>Two steps — the project details are already filled in</strong></p>
       <ol style="font-size:12.5px; color:var(--ink-soft); line-height:1.6; margin:0; padding-left:18px;">
         <li style="margin-bottom:12px;">
-          <strong style="color:var(--ink);">Make a free project</strong> at
-          <a href="https://supabase.com/dashboard/projects" target="_blank" rel="noopener noreferrer">supabase.com</a> —
-          sign in with GitHub, pick any region near you. It asks for a database password you'll never need again.
-        </li>
-        <li style="margin-bottom:12px;">
-          <strong style="color:var(--ink);">Paste the project URL and key</strong> here. Both sit behind the project's
-          <em>Connect</em> button. Paste them together, in either order — this box sorts them out.
-          <textarea id="cloudPaste" rows="3" placeholder="https://abcdefgh.supabase.co&#10;sb_publishable_… or eyJhbGciOi…"
-            style="width:100%; box-sizing:border-box; margin-top:6px; font-size:12px; font-family:inherit; padding:8px; border:1px solid var(--line); border-radius:8px; resize:vertical;">${escapeHtml(cfg ? cfg.url + '\n' + cfg.key : '')}</textarea>
-        </li>
-        <li style="margin-bottom:12px;">
-          <strong style="color:var(--ink);">Run the setup SQL</strong> — it makes the one table your family's board lives in.
+          <strong style="color:var(--ink);">Run the setup SQL</strong> — once for the whole household, not once per device.
+          It makes the one table your family's board lives in.
           <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;">
             <button class="btn btn-ghost" id="cloudCopySql" style="font-size:12px;">📋 Copy SQL</button>
             <button class="btn btn-ghost" id="cloudOpenSql" style="font-size:12px;">↗️ Open SQL editor</button>
@@ -4256,6 +4254,13 @@ function renderCloudBlock(){
             <summary style="cursor:pointer; font-size:11.5px;">Show me what it does</summary>
             <pre style="font-size:11px; line-height:1.5; overflow:auto; background:rgba(0,0,0,0.05); padding:8px 10px; border-radius:8px; margin:6px 0 0;">${escapeHtml(CLOUD_SETUP_SQL)}</pre>
           </details>
+        </li>
+        <li style="margin-bottom:12px;">
+          <strong style="color:var(--ink);">Press Connect.</strong> The project URL and key below are this family's, already
+          filled in. Running your own copy instead? Replace both — paste them together in either order, and this box sorts
+          them out.
+          <textarea id="cloudPaste" rows="3" placeholder="https://abcdefgh.supabase.co&#10;sb_publishable_… or eyJhbGciOi…"
+            style="width:100%; box-sizing:border-box; margin-top:6px; font-size:12px; font-family:inherit; padding:8px; border:1px solid var(--line); border-radius:8px; resize:vertical;">${escapeHtml(cfg ? cfg.url + '\n' + cfg.key : DEFAULT_CLOUD_URL + '\n' + DEFAULT_CLOUD_KEY)}</textarea>
         </li>
       </ol>
       <button class="btn btn-primary" id="cloudConnect" style="margin-top:4px;">${on ? 'Save and reconnect' : 'Connect'}</button>
@@ -4310,7 +4315,7 @@ function renderCloudBlock(){
   if(openSql) openSql.onclick = ()=>{
     const box = document.getElementById('cloudPaste');
     const parsed = box ? parseCloudPaste(box.value) : {};
-    window.open(cloudSqlEditorUrl(parsed.url || ''), '_blank', 'noopener');
+    window.open(cloudSqlEditorUrl(parsed.url || DEFAULT_CLOUD_URL), '_blank', 'noopener');
   };
 
   const connect = document.getElementById('cloudConnect');
