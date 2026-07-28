@@ -1045,11 +1045,14 @@ async function saveLocalOnly(){
    a household, and the alternative (per-field merge) is a lot of machinery for
    a fridge-door app.
 
-   Credentials live in this browser's storage and are never committed. This is a
-   public static site, so anything checked in here would be published, not kept. */
+   The table itself is sealed off. Nothing here touches it directly: reads and
+   writes go through three `security definer` functions that each demand the
+   family id, and no query will list those ids. That matters because this is a
+   public page — the publishable key inside it can be read by anyone, so the key
+   cannot be the lock. The family id is, and it appears only on the household's
+   own devices and in the setup links they send each other. */
 const CLOUD_CONFIG_KEY = 'fh-cloud-config';
 const CLOUD_DEVICE_KEY = 'fh-device-id';
-const CLOUD_TABLE      = 'family_hub_state';
 const CLOUD_POLL_MS    = 8000;   // how often a visible tab checks for news
 const CLOUD_PUSH_MS    = 700;    // debounce, so a burst of edits is one write
 
@@ -1057,6 +1060,14 @@ const CLOUD_PUSH_MS    = 700;    // debounce, so a burst of edits is one write
    other screen in the house to whatever day, list or person this one happens to
    be looking at — maddening rather than helpful. */
 const DEVICE_LOCAL_KEYS = ['calView','calDate','calFilter','habitMonth','habitPersonId','todoView','completedOpen'];
+
+/* This household's own project, prefilled so setting up the next phone is one
+   tap rather than a hunt through a dashboard. Both values are the public pair:
+   the URL is just an address, and a publishable key is designed to ship inside
+   client code. Anyone running their own copy can overwrite both in the panel.
+   What is NOT here — and must never be — is a secret or service_role key. */
+const DEFAULT_CLOUD_URL = 'https://seehonmftkpbxemzehmc.supabase.co';
+const DEFAULT_CLOUD_KEY = 'sb_publishable_kk18vKFswmp3Q8woTnBv_Q_ifFS3qLb';
 
 function deviceId(){
   let id = null;
@@ -1089,7 +1100,12 @@ function normalizeCloudUrl(v){
   if(!/^https?:\/\//i.test(u)) u = 'https://' + u;
   try{
     const parsed = new URL(u);
-    return parsed.protocol === 'https:' ? parsed.origin : '';
+    if(parsed.protocol !== 'https:') return '';
+    /* A pasted line like NEXT_PUBLIC_SUPABASE_URL=https://... will happily parse
+       as a URL whose "host" is the variable name. Insist on something that
+       actually looks like a hostname. */
+    if(!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(parsed.hostname)) return '';
+    return parsed.origin;
   }catch(e){ return ''; }
 }
 function cloudHost(cfg){
@@ -1126,13 +1142,23 @@ function supabaseKeyInfo(key){
 }
 
 /* One paste box beats three labelled ones. Takes whatever comes off the
-   Supabase dashboard — URL and key, either order, on one line or several —
-   and works out which is which. */
+   Supabase dashboard — URL and key, either order, on one line or several. The
+   Connect dialog hands out environment-variable lines rather than bare values,
+   so NAME=value and surrounding quotes get peeled off before anything else. */
 function parseCloudPaste(text){
   const parts = String(text||'').split(/[\s,]+/).map(p=>p.trim()).filter(Boolean);
+  const tidy = (p)=>{
+    let clean = p.replace(/^["'<]+|["'>.,;]+$/g,'');
+    const eq = clean.indexOf('=');
+    /* Only treat it as NAME=value when the left side reads like a variable
+       name — never chop a key that happens to contain '='. */
+    if(eq > 0 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(clean.slice(0, eq))) clean = clean.slice(eq + 1);
+    return clean.replace(/^["'<]+|["'>.,;]+$/g,'');
+  };
   let url = '', key = '';
   parts.forEach(p=>{
-    const clean = p.replace(/^["'<]+|["'>.,;]+$/g,'');
+    const clean = tidy(p);
+    if(!clean) return;
     if(!key && (/^sb_(publishable|secret)_/i.test(clean) || /^eyJ[\w-]+\./.test(clean))) key = clean;
     else if(!url && /supabase\.(co|in|net)/i.test(clean) && !/^eyJ/.test(clean)) url = normalizeCloudUrl(clean);
   });
@@ -1166,9 +1192,8 @@ function cloudErrorMessage(status, body){
   const text = (body||'').toLowerCase();
   if(status === 401 || status === 403)
     return 'That key was rejected. Copy the publishable (or anon) key again — and check the setup SQL ran.';
-  if(status === 404 && (text.includes('relation') || text.includes(CLOUD_TABLE)))
-    return `The ${CLOUD_TABLE} table isn\'t there yet — run the setup SQL below, then try again.`;
-  if(status === 404) return 'That project URL didn\'t answer. Check it for a typo.';
+  if(status === 404 || text.includes('schema cache') || text.includes('could not find the function'))
+    return 'The setup SQL hasn\'t run on this project yet — press Copy SQL, open the SQL editor, press Run, then try again.';
   if(status === 413) return 'The family copy is too large to send. Try smaller profile photos or fewer attachments.';
   if(status >= 500) return 'The cloud database had a server error. It usually clears on its own.';
   return `The cloud database replied ${status}.`;
@@ -1194,7 +1219,6 @@ const cloudSync = {
     renderCloudBlock();          // no-op unless the sync panel happens to be open
   },
 
-  _url(cfg, qs){ return `${cfg.url}/rest/v1/${CLOUD_TABLE}?${qs}`; },
   _headers(cfg, extra){
     /* Legacy anon keys are JWTs and belong in both headers. The newer
        publishable keys are not JWTs, and Supabase rejects them when they turn
@@ -1202,6 +1226,23 @@ const cloudSync = {
     const headers = { apikey: cfg.key };
     if(/^eyJ/.test(cfg.key)) headers.Authorization = `Bearer ${cfg.key}`;
     return Object.assign(headers, extra || {});
+  },
+
+  /* Every call goes through a database function rather than at the table.
+     The table itself is unreachable with this key, so knowing the key is not
+     enough — you also have to know the family id, and there is no query that
+     will list those for you. That id lives only on the household's devices and
+     inside the setup links they send each other. */
+  async _rpc(fn, args){
+    const cfg = cloudConfig();
+    if(!cfg) throw new Error('Family sync isn\'t set up on this device.');
+    const res = await this._fetch(`${cfg.url}/rest/v1/rpc/${fn}`, {
+      method: 'POST',
+      headers: this._headers(cfg, { 'Content-Type':'application/json' }),
+      body: JSON.stringify(args)
+    });
+    const text = await res.text();
+    return text ? JSON.parse(text) : null;
   },
 
   async _fetch(url, opts){
@@ -1223,15 +1264,13 @@ const cloudSync = {
   /* Just the revision marker — a few bytes, which is what makes polling cheap. */
   async fetchMeta(){
     const cfg = cloudConfig(); if(!cfg) return null;
-    const res = await this._fetch(this._url(cfg, `family_id=eq.${encodeURIComponent(cfg.familyId)}&select=rev,updated_at,updated_by`), { headers: this._headers(cfg) });
-    const rows = await res.json();
+    const rows = await this._rpc('family_hub_meta', { fid: cfg.familyId });
     return (rows && rows[0]) || null;
   },
 
   async fetchRow(){
     const cfg = cloudConfig(); if(!cfg) return null;
-    const res = await this._fetch(this._url(cfg, `family_id=eq.${encodeURIComponent(cfg.familyId)}&select=*`), { headers: this._headers(cfg) });
-    const rows = await res.json();
+    const rows = await this._rpc('family_hub_get', { fid: cfg.familyId });
     return (rows && rows[0]) || null;
   },
 
@@ -1278,27 +1317,17 @@ const cloudSync = {
     const cfg = cloudConfig();
     this._busy = true;
     try{
-      /* Step past the highest revision anyone has written, so a device that has
-         been asleep doesn't reuse a number and confuse the others. */
-      let base = this.rev;
-      try{
-        const meta = await this.fetchMeta();
-        if(meta) base = Math.max(base, Number(meta.rev) || 0);
-      }catch(e){ /* couldn't check — our own number still moves forward */ }
-
-      const res = await this._fetch(this._url(cfg, 'on_conflict=family_id'), {
-        method: 'POST',
-        headers: this._headers(cfg, { 'Content-Type':'application/json', Prefer:'resolution=merge-duplicates,return=representation' }),
-        body: JSON.stringify([{
-          family_id: cfg.familyId,
-          payload: cloudPayload(),
-          rev: base + 1,
-          updated_by: deviceId(),
-          updated_at: new Date().toISOString()
-        }])
+      /* The database picks the revision number: it takes whichever is higher,
+         our proposal or one past what's already stored. A device that has been
+         asleep therefore can't reuse a number and confuse the others, and it
+         takes one round trip instead of two to work that out. */
+      const stored = await this._rpc('family_hub_put', {
+        fid: cfg.familyId,
+        body: cloudPayload(),
+        newrev: this.rev + 1,
+        device: deviceId()
       });
-      const rows = await res.json();
-      this.rev = (rows && rows[0] && Number(rows[0].rev)) || base + 1;
+      this.rev = Number(stored) || this.rev + 1;
       this.pendingPush = false;
       this.lastSyncAt = Date.now();
       this.setStatus('live');
@@ -4164,7 +4193,10 @@ const SYNC_GUIDES = {
 /* ---- Family sync panel ----
    Deliberately separate from the calendar Sync panel: that one is about other
    people's calendars, this one is about Family Hub's own data. */
-const CLOUD_SETUP_SQL = `create table if not exists family_hub_state (
+const CLOUD_SETUP_SQL = `-- Family Hub — run once per household, in the Supabase SQL editor.
+-- Safe to run again: it tidies up after the earlier, looser version.
+
+create table if not exists family_hub_state (
   family_id  text primary key,
   payload    text not null,
   rev        bigint not null default 0,
@@ -4174,9 +4206,55 @@ const CLOUD_SETUP_SQL = `create table if not exists family_hub_state (
 
 alter table family_hub_state enable row level security;
 
-create policy "family hub read"   on family_hub_state for select using (true);
-create policy "family hub insert" on family_hub_state for insert with check (true);
-create policy "family hub update" on family_hub_state for update using (true) with check (true);`;
+-- The table is not reachable with a public key. No policies, no privileges:
+-- every request has to come through the three functions below, and each of
+-- those demands the family id. There is no query that will list ids for you.
+drop policy if exists "family hub read"   on family_hub_state;
+drop policy if exists "family hub insert" on family_hub_state;
+drop policy if exists "family hub update" on family_hub_state;
+revoke all on table family_hub_state from anon, authenticated;
+
+-- Poll: the revision marker only, which is what keeps checking cheap.
+create or replace function family_hub_meta(fid text)
+returns table (rev bigint, updated_at timestamptz, updated_by text)
+language sql security definer set search_path = public as $$
+  select rev, updated_at, updated_by from family_hub_state where family_id = fid;
+$$;
+
+-- Read the family's board.
+create or replace function family_hub_get(fid text)
+returns table (payload text, rev bigint, updated_at timestamptz, updated_by text)
+language sql security definer set search_path = public as $$
+  select payload, rev, updated_at, updated_by from family_hub_state where family_id = fid;
+$$;
+
+-- Write it back. The database picks the revision, so two devices can't collide.
+create or replace function family_hub_put(fid text, body text, newrev bigint, device text)
+returns bigint
+language plpgsql security definer set search_path = public as $$
+declare stored bigint;
+begin
+  if fid is null or length(fid) < 12 then
+    raise exception 'family id is too short to be safe';
+  end if;
+  insert into family_hub_state as t (family_id, payload, rev, updated_by, updated_at)
+  values (fid, body, coalesce(newrev, 1), device, now())
+  on conflict (family_id) do update
+    set payload    = excluded.payload,
+        rev        = greatest(t.rev + 1, excluded.rev),
+        updated_by = excluded.updated_by,
+        updated_at = now()
+  returning t.rev into stored;
+  return stored;
+end;
+$$;
+
+revoke all on function family_hub_meta(text) from public;
+revoke all on function family_hub_get(text) from public;
+revoke all on function family_hub_put(text, text, bigint, text) from public;
+grant execute on function family_hub_meta(text) to anon, authenticated;
+grant execute on function family_hub_get(text) to anon, authenticated;
+grant execute on function family_hub_put(text, text, bigint, text) to anon, authenticated;`;
 
 let cloudFormOpen = false;
 
@@ -4218,21 +4296,11 @@ function renderCloudBlock(){
 
   const form = (!on || cloudFormOpen) ? `
     <div style="border:1px solid var(--line, rgba(0,0,0,0.12)); border-radius:10px; padding:10px 12px; margin:10px 0 0;">
-      <p style="font-size:12.5px; margin:0 0 8px;"><strong>Three steps, about five minutes — once for the whole house</strong></p>
+      <p style="font-size:12.5px; margin:0 0 8px;"><strong>Two steps — the project details are already filled in</strong></p>
       <ol style="font-size:12.5px; color:var(--ink-soft); line-height:1.6; margin:0; padding-left:18px;">
         <li style="margin-bottom:12px;">
-          <strong style="color:var(--ink);">Make a free project</strong> at
-          <a href="https://supabase.com/dashboard/projects" target="_blank" rel="noopener noreferrer">supabase.com</a> —
-          sign in with GitHub, pick any region near you. It asks for a database password you'll never need again.
-        </li>
-        <li style="margin-bottom:12px;">
-          <strong style="color:var(--ink);">Paste the project URL and key</strong> here. Both sit behind the project's
-          <em>Connect</em> button. Paste them together, in either order — this box sorts them out.
-          <textarea id="cloudPaste" rows="3" placeholder="https://abcdefgh.supabase.co&#10;sb_publishable_… or eyJhbGciOi…"
-            style="width:100%; box-sizing:border-box; margin-top:6px; font-size:12px; font-family:inherit; padding:8px; border:1px solid var(--line); border-radius:8px; resize:vertical;">${escapeHtml(cfg ? cfg.url + '\n' + cfg.key : '')}</textarea>
-        </li>
-        <li style="margin-bottom:12px;">
-          <strong style="color:var(--ink);">Run the setup SQL</strong> — it makes the one table your family's board lives in.
+          <strong style="color:var(--ink);">Run the setup SQL</strong> — once for the whole household, not once per device.
+          It makes the one table your family's board lives in.
           <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;">
             <button class="btn btn-ghost" id="cloudCopySql" style="font-size:12px;">📋 Copy SQL</button>
             <button class="btn btn-ghost" id="cloudOpenSql" style="font-size:12px;">↗️ Open SQL editor</button>
@@ -4241,6 +4309,13 @@ function renderCloudBlock(){
             <summary style="cursor:pointer; font-size:11.5px;">Show me what it does</summary>
             <pre style="font-size:11px; line-height:1.5; overflow:auto; background:rgba(0,0,0,0.05); padding:8px 10px; border-radius:8px; margin:6px 0 0;">${escapeHtml(CLOUD_SETUP_SQL)}</pre>
           </details>
+        </li>
+        <li style="margin-bottom:12px;">
+          <strong style="color:var(--ink);">Press Connect.</strong> The project URL and key below are this family's, already
+          filled in. Running your own copy instead? Replace both — paste them together in either order, and this box sorts
+          them out.
+          <textarea id="cloudPaste" rows="3" placeholder="https://abcdefgh.supabase.co&#10;sb_publishable_… or eyJhbGciOi…"
+            style="width:100%; box-sizing:border-box; margin-top:6px; font-size:12px; font-family:inherit; padding:8px; border:1px solid var(--line); border-radius:8px; resize:vertical;">${escapeHtml(cfg ? cfg.url + '\n' + cfg.key : DEFAULT_CLOUD_URL + '\n' + DEFAULT_CLOUD_KEY)}</textarea>
         </li>
       </ol>
       <button class="btn btn-primary" id="cloudConnect" style="margin-top:4px;">${on ? 'Save and reconnect' : 'Connect'}</button>
@@ -4260,9 +4335,9 @@ function renderCloudBlock(){
       </details>
 
       <p style="font-size:11.5px; color:var(--ink-soft); line-height:1.5; margin:10px 0 0;">
-        The key you paste is the <strong>publishable</strong> (or <strong>anon</strong>) one — meant to be public. A
-        <strong>secret</strong> or <strong>service role</strong> key is the admin key and is refused here: every file this app
-        serves is public, so pasting one would publish it.
+        The key here is the <strong>publishable</strong> one — it ships inside this page, so treat it as public. On its own it
+        can't reach anything: every request goes through a database function that demands the family ID, and that ID travels
+        only between your own devices. A <strong>secret</strong> or <strong>service role</strong> key is refused outright.
       </p>
     </div>` : '';
 
@@ -4295,7 +4370,7 @@ function renderCloudBlock(){
   if(openSql) openSql.onclick = ()=>{
     const box = document.getElementById('cloudPaste');
     const parsed = box ? parseCloudPaste(box.value) : {};
-    window.open(cloudSqlEditorUrl(parsed.url || ''), '_blank', 'noopener');
+    window.open(cloudSqlEditorUrl(parsed.url || DEFAULT_CLOUD_URL), '_blank', 'noopener');
   };
 
   const connect = document.getElementById('cloudConnect');
