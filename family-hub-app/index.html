@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://accounts.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://graph.microsoft.com https://login.microsoftonline.com https://login.live.com https://cdn.jsdelivr.net https://accounts.google.com https://www.googleapis.com https://oauth2.googleapis.com; frame-src https://login.microsoftonline.com https://login.live.com https://accounts.google.com; base-uri 'self'; form-action 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://accounts.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://graph.microsoft.com https://login.microsoftonline.com https://login.live.com https://cdn.jsdelivr.net https://accounts.google.com https://www.googleapis.com https://oauth2.googleapis.com https://*.supabase.co; frame-src https://login.microsoftonline.com https://login.live.com https://accounts.google.com; base-uri 'self'; form-action 'self'">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <title>Family Hub</title>
 <meta name="theme-color" content="#2E3A46">
@@ -517,6 +517,7 @@
       <h1>🏡 Family Hub</h1>
     </div>
     <div class="header-actions">
+      <button class="icon-btn" id="cloudBtn" title="Family sync" style="opacity:0.45;">☁️</button>
       <button class="icon-btn" id="screensaverBtn" title="Screensaver">🌙</button>
       <button class="icon-btn" id="lockBtn" title="Lock">🔒</button>
     </div>
@@ -582,9 +583,10 @@ const STORAGE_KEY = 'family-hub-state-v2';
 
 /* Storage adapter: uses Claude's shared cross-device storage when available
    (window.storage, inside claude.ai artifacts). When self-hosted elsewhere,
-   window.storage won't exist, so this falls back to the browser's localStorage —
-   which still works, but only syncs on THIS device/browser, not across devices.
-   See the README for how to wire up real cross-device sync on your own hosting. */
+   window.storage won't exist, so this falls back to the browser's localStorage.
+   That keeps the app instant and usable offline, but on its own it only covers
+   THIS device — Settings → Family sync is what puts the same copy on every
+   phone, tablet and computer. */
 const storageAdapter = (window.storage && typeof window.storage.get === 'function') ? window.storage : {
   async get(key){ const v = localStorage.getItem(key); return v ? {key, value:v, shared:false} : null; },
   async set(key, value){ localStorage.setItem(key, value); return {key, value, shared:false}; },
@@ -1008,9 +1010,437 @@ async function saveState(){
         console.error('Save failed', e);
         toast('Couldn\'t save your last change. Check connection/space and try again.', 'error');
       }
+      if(!cloudSync.applyingRemote) cloudSync.queuePush();
       resolve();
     }, 250);
   });
+}
+
+/* Saves to this device WITHOUT sending the result back up. Used when the copy
+   we just wrote came down from the cloud in the first place — pushing it again
+   would be an echo, and each echo would bump the revision for everyone else. */
+async function saveLocalOnly(){
+  cloudSync.applyingRemote = true;
+  try{ await saveState(); }
+  finally{ cloudSync.applyingRemote = false; }
+}
+
+/* ======================= CROSS-DEVICE FAMILY SYNC =======================
+   Local storage keeps this device instant and usable with no connection. A
+   single row in a free Supabase (Postgres) table keeps every OTHER device
+   holding the same copy.
+
+   The row IS the whole Family Hub document, so there is no server-side schema
+   to migrate as the app grows — one household, one JSON blob:
+
+     family_id   text primary key    which household this is
+     payload     text                JSON.stringify(state), minus view-only keys
+     rev         bigint              bumped on every write; how devices spot news
+     updated_by  text                which device wrote it last
+     updated_at  timestamptz
+
+   Devices poll that row's `rev` every few seconds while the tab is on screen —
+   a few bytes per check — and only download the payload when the number moves.
+   Whole-document last-write-wins: two people editing the same second is rare in
+   a household, and the alternative (per-field merge) is a lot of machinery for
+   a fridge-door app.
+
+   Credentials live in this browser's storage and are never committed. This is a
+   public static site, so anything checked in here would be published, not kept. */
+const CLOUD_CONFIG_KEY = 'fh-cloud-config';
+const CLOUD_DEVICE_KEY = 'fh-device-id';
+const CLOUD_TABLE      = 'family_hub_state';
+const CLOUD_POLL_MS    = 8000;   // how often a visible tab checks for news
+const CLOUD_PUSH_MS    = 700;    // debounce, so a burst of edits is one write
+
+/* What stays on the device holding the screen. Syncing these would drag every
+   other screen in the house to whatever day, list or person this one happens to
+   be looking at — maddening rather than helpful. */
+const DEVICE_LOCAL_KEYS = ['calView','calDate','calFilter','habitMonth','habitPersonId','todoView','completedOpen'];
+
+function deviceId(){
+  let id = null;
+  try{ id = localStorage.getItem(CLOUD_DEVICE_KEY); }catch(e){}
+  if(!id){
+    id = 'dev-' + Math.random().toString(36).slice(2,8);
+    try{ localStorage.setItem(CLOUD_DEVICE_KEY, id); }catch(e){}
+  }
+  return id;
+}
+
+function cloudConfig(){
+  try{
+    const raw = localStorage.getItem(CLOUD_CONFIG_KEY);
+    const cfg = raw ? JSON.parse(raw) : null;
+    return (cfg && cfg.url && cfg.key && cfg.familyId) ? cfg : null;
+  }catch(e){ return null; }
+}
+function writeCloudConfig(cfg){
+  try{ localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(cfg)); }
+  catch(e){ throw new Error('This browser wouldn\'t save the sync settings (private mode blocks storage).'); }
+}
+function forgetCloudConfig(){ try{ localStorage.removeItem(CLOUD_CONFIG_KEY); }catch(e){} }
+
+/* Takes what people actually paste: with or without https://, with a trailing
+   slash, or with the /rest/v1 tail already on it. */
+function normalizeCloudUrl(v){
+  let u = (v||'').trim().replace(/\/+$/,'').replace(/\/rest\/v1.*$/,'');
+  if(!u) return '';
+  if(!/^https?:\/\//i.test(u)) u = 'https://' + u;
+  try{
+    const parsed = new URL(u);
+    return parsed.protocol === 'https:' ? parsed.origin : '';
+  }catch(e){ return ''; }
+}
+function cloudHost(cfg){
+  try{ return new URL(cfg.url).host; }catch(e){ return cfg.url; }
+}
+function newFamilyId(){
+  return 'family-' + Math.random().toString(36).slice(2,8) + Math.random().toString(36).slice(2,8);
+}
+
+/* ---- Reading a pasted key ----
+   Supabase has two generations of key. The legacy `anon` key is a JWT whose
+   payload names the project, which is handy: paste it and the project URL can
+   be worked out rather than typed. The newer `sb_publishable_…` key is opaque,
+   so that one needs the URL alongside it.
+
+   Both of those are meant to be public. The `service_role` and `sb_secret_…`
+   keys are not — they bypass every access policy, and this app serves every
+   file it has to anyone who asks. Pasting one here would be handing out the
+   keys to the database, so they're refused rather than quietly accepted. */
+function supabaseKeyInfo(key){
+  const k = (key||'').trim();
+  if(!k) return { kind:'none' };
+  if(/^sb_secret_/i.test(k)) return { kind:'secret' };
+  if(/^sb_publishable_/i.test(k)) return { kind:'publishable' };
+  if(/^eyJ/.test(k)){
+    try{
+      const body = k.split('.')[1].replace(/-/g,'+').replace(/_/g,'/');
+      const claims = JSON.parse(atob(body + '==='.slice((body.length + 3) % 4)));
+      if(claims.role === 'service_role') return { kind:'secret' };
+      return { kind:'anon', ref: claims.ref || '' };
+    }catch(e){ return { kind:'unknown' }; }
+  }
+  return { kind:'unknown' };
+}
+
+/* One paste box beats three labelled ones. Takes whatever comes off the
+   Supabase dashboard — URL and key, either order, on one line or several —
+   and works out which is which. */
+function parseCloudPaste(text){
+  const parts = String(text||'').split(/[\s,]+/).map(p=>p.trim()).filter(Boolean);
+  let url = '', key = '';
+  parts.forEach(p=>{
+    const clean = p.replace(/^["'<]+|["'>.,;]+$/g,'');
+    if(!key && (/^sb_(publishable|secret)_/i.test(clean) || /^eyJ[\w-]+\./.test(clean))) key = clean;
+    else if(!url && /supabase\.(co|in|net)/i.test(clean) && !/^eyJ/.test(clean)) url = normalizeCloudUrl(clean);
+  });
+  const info = supabaseKeyInfo(key);
+  if(info.kind === 'secret')
+    return { error: 'That\u2019s a secret key — it bypasses every access rule, and this app is a public web page. Use the publishable (or anon) key instead.' };
+  if(key && info.kind === 'unknown')
+    return { error: 'That doesn\u2019t look like a Supabase key. It starts with sb_publishable_ or eyJ.' };
+  /* Legacy keys name their own project, so the URL is optional for those. */
+  if(!url && info.ref) url = `https://${info.ref}.supabase.co`;
+  return { url, key, kind: info.kind };
+}
+
+/* The dashboard pages people need, for the project they just pasted. */
+function cloudProjectRef(url){
+  try{ return new URL(url).host.split('.')[0]; }catch(e){ return ''; }
+}
+function cloudSqlEditorUrl(url){
+  const ref = cloudProjectRef(url);
+  return ref ? `https://supabase.com/dashboard/project/${ref}/sql` : 'https://supabase.com/dashboard/project/_/sql';
+}
+
+/* Everything except the view-only keys — that's what goes in the row. */
+function cloudPayload(){
+  const copy = {};
+  Object.keys(state).forEach(k=>{ if(!DEVICE_LOCAL_KEYS.includes(k)) copy[k] = state[k]; });
+  return JSON.stringify(copy);
+}
+
+function cloudErrorMessage(status, body){
+  const text = (body||'').toLowerCase();
+  if(status === 401 || status === 403)
+    return 'That key was rejected. Copy the publishable (or anon) key again — and check the setup SQL ran.';
+  if(status === 404 && (text.includes('relation') || text.includes(CLOUD_TABLE)))
+    return `The ${CLOUD_TABLE} table isn\'t there yet — run the setup SQL below, then try again.`;
+  if(status === 404) return 'That project URL didn\'t answer. Check it for a typo.';
+  if(status === 413) return 'The family copy is too large to send. Try smaller profile photos or fewer attachments.';
+  if(status >= 500) return 'The cloud database had a server error. It usually clears on its own.';
+  return `The cloud database replied ${status}.`;
+}
+
+const cloudSync = {
+  status: 'off',        // off | connecting | live | offline | error
+  detail: '',
+  rev: 0,               // highest revision this device has seen
+  lastSyncAt: 0,
+  pendingPush: false,   // an edit that hasn't reached the cloud yet
+  applyingRemote: false,
+  _pollTimer: null,
+  _pushTimer: null,
+  _busy: false,
+
+  isOn(){ return !!cloudConfig(); },
+
+  setStatus(status, detail){
+    this.status = status;
+    this.detail = detail || '';
+    updateCloudIndicator();
+    renderCloudBlock();          // no-op unless the sync panel happens to be open
+  },
+
+  _url(cfg, qs){ return `${cfg.url}/rest/v1/${CLOUD_TABLE}?${qs}`; },
+  _headers(cfg, extra){
+    /* Legacy anon keys are JWTs and belong in both headers. The newer
+       publishable keys are not JWTs, and Supabase rejects them when they turn
+       up as a bearer token — those go in `apikey` alone. */
+    const headers = { apikey: cfg.key };
+    if(/^eyJ/.test(cfg.key)) headers.Authorization = `Bearer ${cfg.key}`;
+    return Object.assign(headers, extra || {});
+  },
+
+  async _fetch(url, opts){
+    let res;
+    try{ res = await fetch(url, opts); }
+    catch(e){
+      const err = new Error('No connection to the cloud database right now.');
+      err.offline = true;
+      throw err;
+    }
+    if(!res.ok){
+      let body = '';
+      try{ body = await res.text(); }catch(e){}
+      throw new Error(cloudErrorMessage(res.status, body));
+    }
+    return res;
+  },
+
+  /* Just the revision marker — a few bytes, which is what makes polling cheap. */
+  async fetchMeta(){
+    const cfg = cloudConfig(); if(!cfg) return null;
+    const res = await this._fetch(this._url(cfg, `family_id=eq.${encodeURIComponent(cfg.familyId)}&select=rev,updated_at,updated_by`), { headers: this._headers(cfg) });
+    const rows = await res.json();
+    return (rows && rows[0]) || null;
+  },
+
+  async fetchRow(){
+    const cfg = cloudConfig(); if(!cfg) return null;
+    const res = await this._fetch(this._url(cfg, `family_id=eq.${encodeURIComponent(cfg.familyId)}&select=*`), { headers: this._headers(cfg) });
+    const rows = await res.json();
+    return (rows && rows[0]) || null;
+  },
+
+  /* Replaces this device's copy with the family's, keeping whatever this screen
+     is currently looking at. */
+  applyRemote(remote){
+    const keep = {};
+    DEVICE_LOCAL_KEYS.forEach(k=>{ if(state && state[k] !== undefined) keep[k] = state[k]; });
+    const merged = migrateState(remote);
+    DEVICE_LOCAL_KEYS.forEach(k=>{ if(keep[k] !== undefined) merged[k] = keep[k]; });
+    if(!merged.calView) merged.calView = 'month';
+    if(!merged.calDate) merged.calDate = todayStr();
+    state = merged;
+  },
+
+  /* 'applied' — took a newer copy · 'current' — already up to date · 'empty' — no row yet */
+  async pull(force){
+    if(!this.isOn()) return 'empty';
+    if(!force){
+      const meta = await this.fetchMeta();
+      if(!meta) return 'empty';
+      if((Number(meta.rev) || 0) <= this.rev){
+        this.lastSyncAt = Date.now();
+        this.setStatus('live');
+        return 'current';
+      }
+    }
+    const row = await this.fetchRow();
+    if(!row) return 'empty';
+    let remote;
+    try{ remote = JSON.parse(row.payload); }
+    catch(e){ throw new Error('The copy in the cloud was unreadable, so this device kept its own.'); }
+    this.applyRemote(remote);
+    this.rev = Number(row.rev) || 0;
+    this.lastSyncAt = Date.now();
+    this.setStatus('live');
+    await saveLocalOnly();
+    return 'applied';
+  },
+
+  async push(){
+    if(!this.isOn()) return;
+    if(this._busy){ this.pendingPush = true; return; }
+    const cfg = cloudConfig();
+    this._busy = true;
+    try{
+      /* Step past the highest revision anyone has written, so a device that has
+         been asleep doesn't reuse a number and confuse the others. */
+      let base = this.rev;
+      try{
+        const meta = await this.fetchMeta();
+        if(meta) base = Math.max(base, Number(meta.rev) || 0);
+      }catch(e){ /* couldn't check — our own number still moves forward */ }
+
+      const res = await this._fetch(this._url(cfg, 'on_conflict=family_id'), {
+        method: 'POST',
+        headers: this._headers(cfg, { 'Content-Type':'application/json', Prefer:'resolution=merge-duplicates,return=representation' }),
+        body: JSON.stringify([{
+          family_id: cfg.familyId,
+          payload: cloudPayload(),
+          rev: base + 1,
+          updated_by: deviceId(),
+          updated_at: new Date().toISOString()
+        }])
+      });
+      const rows = await res.json();
+      this.rev = (rows && rows[0] && Number(rows[0].rev)) || base + 1;
+      this.pendingPush = false;
+      this.lastSyncAt = Date.now();
+      this.setStatus('live');
+    }catch(err){
+      /* Nothing is lost — the edit is already saved on this device, and the next
+         tick (or the next time the connection returns) sends it. */
+      this.pendingPush = true;
+      this.setStatus(err.offline ? 'offline' : 'error', err.message);
+    }finally{
+      this._busy = false;
+    }
+  },
+
+  queuePush(){
+    if(!this.isOn()) return;
+    this.pendingPush = true;
+    clearTimeout(this._pushTimer);
+    this._pushTimer = setTimeout(()=>this.push(), CLOUD_PUSH_MS);
+  },
+
+  async tick(){
+    if(!this.isOn() || document.visibilityState === 'hidden') return;
+    try{
+      if(this.pendingPush){ await this.push(); return; }
+      const result = await this.pull(false);
+      if(result === 'empty'){ await this.push(); return; }   // first device seeds the row
+      if(result === 'applied'){
+        render();
+        toast('Updated from another device.', 'success');
+      }
+    }catch(err){
+      this.setStatus(err.offline ? 'offline' : 'error', err.message);
+    }
+  },
+
+  start(){
+    this.stop();
+    if(!this.isOn()){ this.setStatus('off'); return; }
+    this._pollTimer = setInterval(()=>this.tick(), CLOUD_POLL_MS);
+  },
+  stop(){
+    clearInterval(this._pollTimer); this._pollTimer = null;
+    clearTimeout(this._pushTimer);  this._pushTimer = null;
+  },
+
+  /* Points this device at a family row. If the row already holds a copy, that
+     copy wins and this device adopts it; if not, this device's data seeds it.
+     Returns 'joined' or 'seeded'. */
+  async connect(cfg){
+    this.stop();
+    writeCloudConfig(cfg);
+    this.rev = 0;
+    this.pendingPush = false;
+    this.setStatus('connecting');
+    try{
+      const row = await this.fetchRow();
+      if(row){
+        await this.pull(true);
+        render();
+      }else{
+        await this.push();
+        if(this.status !== 'live') throw new Error(this.detail || 'Couldn\'t write to the cloud database.');
+      }
+      this.start();
+      return row ? 'joined' : 'seeded';
+    }catch(err){
+      forgetCloudConfig();
+      this.setStatus('off');
+      throw err;
+    }
+  },
+
+  disconnect(){
+    this.stop();
+    forgetCloudConfig();
+    this.rev = 0;
+    this.pendingPush = false;
+    this.setStatus('off');
+  }
+};
+
+function cloudStatusLabel(){
+  switch(cloudSync.status){
+    case 'live':       return '🟢 Syncing across every device';
+    case 'connecting': return '🔵 Connecting…';
+    case 'offline':    return '🟡 Offline — saved here, will sync when the connection returns';
+    case 'error':      return '🔴 Sync problem';
+    default:           return '⚪ This device only';
+  }
+}
+
+function updateCloudIndicator(){
+  const btn = document.getElementById('cloudBtn');
+  if(!btn) return;
+  const looks = {
+    live:       { icon:'☁️', title:'Family sync: live on every device' },
+    connecting: { icon:'🔄', title:'Family sync: connecting…' },
+    offline:    { icon:'📴', title:'Family sync: offline — changes go up when the connection returns' },
+    error:      { icon:'⚠️', title:'Family sync: ' + (cloudSync.detail || 'something went wrong') },
+    off:        { icon:'☁️', title:'Family sync: not set up — this device only' }
+  };
+  const look = looks[cloudSync.status] || looks.off;
+  btn.textContent = look.icon;
+  btn.title = look.title;
+  btn.style.opacity = cloudSync.status === 'off' ? '0.45' : '1';
+}
+
+function cloudAgoLabel(){
+  if(!cloudSync.lastSyncAt) return 'not yet';
+  const secs = Math.round((Date.now() - cloudSync.lastSyncAt) / 1000);
+  if(secs < 10) return 'just now';
+  if(secs < 60) return `${secs} seconds ago`;
+  const mins = Math.round(secs/60);
+  if(mins < 60) return `${mins} minute${mins===1?'':'s'} ago`;
+  const hrs = Math.round(mins/60);
+  return `${hrs} hour${hrs===1?'':'s'} ago`;
+}
+
+/* ---- Invite links ----
+   Setting a phone up by typing a project URL and a 200-character key is nobody's
+   idea of a good time, so one configured device can hand the settings to the
+   next one in a link. The link carries a key, so it's shared the way a house key
+   is — directly, to people who live there. */
+function cloudInviteLink(cfg){
+  const bytes = new TextEncoder().encode(JSON.stringify(cfg));
+  const b64 = btoa(String.fromCharCode(...bytes));
+  return location.origin + location.pathname + '#fh-sync=' + encodeURIComponent(b64);
+}
+/* Reads an invite out of the address bar and strips it straight away, so the key
+   doesn't sit in the URL bar, in history, or in a screenshot. */
+function takeInviteFromHash(){
+  const match = /(?:^|[#&])fh-sync=([^&]+)/.exec(location.hash || '');
+  if(!match) return null;
+  history.replaceState(null, '', location.pathname + location.search);
+  try{
+    const bin = atob(decodeURIComponent(match[1]));
+    const bytes = Uint8Array.from(bin, c=>c.charCodeAt(0));
+    const cfg = JSON.parse(new TextDecoder().decode(bytes));
+    const url = normalizeCloudUrl(cfg.url);
+    if(!url || !cfg.key || !cfg.familyId) return null;
+    return { url, key: String(cfg.key).trim(), familyId: String(cfg.familyId).trim() };
+  }catch(e){ return null; }
 }
 
 function personById(id){ return state.people.find(p=>p.id===id); }
@@ -2893,6 +3323,12 @@ function mealSlotModal(key){
 /* ============================= SETTINGS ============================= */
 function renderSettings(){
   const tz = tzSettings();
+  /* Family sync headline: what this device is actually doing with its data. */
+  const familySyncNote = cloudSync.isOn()
+    ? `Chores, to-dos, habits, points, budget and meals are syncing through your cloud database, so every device shows the same board. Status: <strong>${cloudStatusLabel()}</strong>.`
+    : usingLocalFallback
+      ? `⚠️ This copy is saving data <strong>on this device/browser only</strong>. Connect a small free cloud database and every phone, tablet and computer shows the same board — about five minutes, once. After that, one button hands the settings to your other devices in a link.`
+      : `This copy already syncs across every device that opens this link, so a cloud database is optional here.`;
   const people = state.people.map(p=>`
     <div class="list-row">
       ${avatarHtml(p)}
@@ -2984,13 +3420,15 @@ function renderSettings(){
 
       <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
 
+      <h3 style="font-size:15px;">Family sync — every phone, tablet, and computer</h3>
+      <p style="font-size:13px; color:var(--ink-soft); line-height:1.5;">${familySyncNote}</p>
+      <button class="btn btn-ghost" id="familySyncBtn">☁️ Open family sync</button>
+
+      <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
+
       <h3 style="font-size:15px;">Calendar sync (Google, Outlook, Yahoo, Cozi)</h3>
       <p style="font-size:13px; color:var(--ink-soft); line-height:1.5;">
-        ${usingLocalFallback
-          ? `⚠️ This copy is saving data <strong>on this device/browser only</strong>. To sync Family Hub itself across every phone, tablet, and computer, it needs a small cloud database wired in — see the README.`
-          : `Family Hub already syncs across every device that opens this link.`}
-        <br><br>
-        To connect with outside calendars, all four of those apps read and write the standard <strong>.ics</strong> calendar format. Use the Sync panel to import an .ics file from any of them, or export your Family Hub calendar to load into them. Live automatic two-way sync needs a backend — the README covers it.
+        That's a different job from the one above: family sync keeps Family Hub's own data in step, while this connects to <em>outside</em> calendars. All four of those apps read and write the standard <strong>.ics</strong> calendar format, so the Sync panel can import a file from any of them or export yours to load in. Google and Outlook also do live two-way sync by signing in.
       </p>
       <button class="btn btn-ghost" id="exportIcsBtn">🔄 Open calendar sync</button>
     </div>`;
@@ -3723,6 +4161,261 @@ const SYNC_GUIDES = {
   Cozi: `Cozi has no developer API — it works through iCal feeds only. In Cozi (desktop): Settings → Connected Calendars → it can <strong>subscribe</strong> to a feed URL (read-only) or export its own. Import Cozi's exported .ics below; to show Family Hub in Cozi, host the exported file and add its URL under Connected Calendars.`
 };
 
+/* ---- Family sync panel ----
+   Deliberately separate from the calendar Sync panel: that one is about other
+   people's calendars, this one is about Family Hub's own data. */
+const CLOUD_SETUP_SQL = `create table if not exists family_hub_state (
+  family_id  text primary key,
+  payload    text not null,
+  rev        bigint not null default 0,
+  updated_by text,
+  updated_at timestamptz not null default now()
+);
+
+alter table family_hub_state enable row level security;
+
+create policy "family hub read"   on family_hub_state for select using (true);
+create policy "family hub insert" on family_hub_state for insert with check (true);
+create policy "family hub update" on family_hub_state for update using (true) with check (true);`;
+
+let cloudFormOpen = false;
+
+function familySyncModal(){
+  cloudFormOpen = !cloudSync.isOn();
+  openModal(`
+    <h3>☁️ Family sync</h3>
+    <p style="font-size:13px; color:var(--ink-soft); margin-top:-6px;">
+      Chores, to-dos, habits, points, budget and meals live in <strong>this browser</strong> until a small cloud database is wired in. Do that once and every phone, tablet and computer shows the same board.
+    </p>
+    <div id="cloudBlock"></div>
+    <div class="modal-actions"><button class="btn btn-ghost" id="cloudClose">Close</button></div>
+  `);
+  renderCloudBlock();
+  document.getElementById('cloudClose').onclick = ()=>{ closeModal(); render(); };
+}
+
+function renderCloudBlock(){
+  const block = document.getElementById('cloudBlock');
+  if(!block) return;
+  const cfg = cloudConfig();
+  const on = !!cfg;
+
+  const connectedSummary = on ? `
+    <div style="background:rgba(0,0,0,0.04); border-radius:8px; padding:8px 10px; margin:0 0 10px; font-size:12.5px; line-height:1.7;">
+      <div>Database: <strong>${escapeHtml(cloudHost(cfg))}</strong></div>
+      <div>Family: <code style="user-select:all;">${escapeHtml(cfg.familyId)}</code></div>
+      <div>This device: <code>${escapeHtml(deviceId())}</code> · last sync ${escapeHtml(cloudAgoLabel())}</div>
+    </div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+      <button class="btn btn-primary" id="cloudSyncNow">🔄 Sync now</button>
+      <button class="btn btn-ghost" id="cloudInvite">🔗 Copy setup link for another device</button>
+      <button class="btn btn-ghost" id="cloudEdit" style="font-size:12px;">${cloudFormOpen ? 'Cancel' : 'Change settings'}</button>
+      <button class="btn btn-ghost" id="cloudDisconnect" style="font-size:12px;">Stop syncing</button>
+    </div>
+    <p style="font-size:11.5px; color:var(--ink-soft); line-height:1.5; margin:8px 0 0;">
+      The setup link contains the key — send it to your own devices the way you'd hand over a house key, not in a public post.
+    </p>` : '';
+
+  const form = (!on || cloudFormOpen) ? `
+    <div style="border:1px solid var(--line, rgba(0,0,0,0.12)); border-radius:10px; padding:10px 12px; margin:10px 0 0;">
+      <p style="font-size:12.5px; margin:0 0 8px;"><strong>Three steps, about five minutes — once for the whole house</strong></p>
+      <ol style="font-size:12.5px; color:var(--ink-soft); line-height:1.6; margin:0; padding-left:18px;">
+        <li style="margin-bottom:12px;">
+          <strong style="color:var(--ink);">Make a free project</strong> at
+          <a href="https://supabase.com/dashboard/projects" target="_blank" rel="noopener noreferrer">supabase.com</a> —
+          sign in with GitHub, pick any region near you. It asks for a database password you'll never need again.
+        </li>
+        <li style="margin-bottom:12px;">
+          <strong style="color:var(--ink);">Paste the project URL and key</strong> here. Both sit behind the project's
+          <em>Connect</em> button. Paste them together, in either order — this box sorts them out.
+          <textarea id="cloudPaste" rows="3" placeholder="https://abcdefgh.supabase.co&#10;sb_publishable_… or eyJhbGciOi…"
+            style="width:100%; box-sizing:border-box; margin-top:6px; font-size:12px; font-family:inherit; padding:8px; border:1px solid var(--line); border-radius:8px; resize:vertical;">${escapeHtml(cfg ? cfg.url + '\n' + cfg.key : '')}</textarea>
+        </li>
+        <li style="margin-bottom:12px;">
+          <strong style="color:var(--ink);">Run the setup SQL</strong> — it makes the one table your family's board lives in.
+          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;">
+            <button class="btn btn-ghost" id="cloudCopySql" style="font-size:12px;">📋 Copy SQL</button>
+            <button class="btn btn-ghost" id="cloudOpenSql" style="font-size:12px;">↗️ Open SQL editor</button>
+          </div>
+          <details style="margin-top:6px;">
+            <summary style="cursor:pointer; font-size:11.5px;">Show me what it does</summary>
+            <pre style="font-size:11px; line-height:1.5; overflow:auto; background:rgba(0,0,0,0.05); padding:8px 10px; border-radius:8px; margin:6px 0 0;">${escapeHtml(CLOUD_SETUP_SQL)}</pre>
+          </details>
+        </li>
+      </ol>
+      <button class="btn btn-primary" id="cloudConnect" style="margin-top:4px;">${on ? 'Save and reconnect' : 'Connect'}</button>
+
+      <details style="margin-top:10px;">
+        <summary style="cursor:pointer; font-size:11.5px; color:var(--ink-soft);">Advanced</summary>
+        <div class="field" style="margin-top:8px;"><label>Family ID — identifies your household's row</label>
+          <div class="add-row" style="margin:0;">
+            <input id="cloudFamily" value="${escapeHtml(cfg ? cfg.familyId : newFamilyId())}" placeholder="family-…">
+            <button class="btn btn-ghost" id="cloudGenFamily" style="font-size:12px;">New</button>
+          </div>
+        </div>
+        <p style="font-size:11.5px; color:var(--ink-soft); line-height:1.5; margin:6px 0 0;">
+          Generated for you, and carried to your other devices by the setup link — there's normally no reason to touch it.
+          If this family already holds data in the cloud, this device adopts it and its current local copy is replaced.
+        </p>
+      </details>
+
+      <p style="font-size:11.5px; color:var(--ink-soft); line-height:1.5; margin:10px 0 0;">
+        The key you paste is the <strong>publishable</strong> (or <strong>anon</strong>) one — meant to be public. A
+        <strong>secret</strong> or <strong>service role</strong> key is the admin key and is refused here: every file this app
+        serves is public, so pasting one would publish it.
+      </p>
+    </div>` : '';
+
+  block.innerHTML = `
+    <p style="font-size:12.5px; color:var(--ink-soft); margin:4px 0 8px;">
+      Status: <strong>${cloudStatusLabel()}</strong>${cloudSync.pendingPush && cloudSync.status !== 'live' ? ' · changes waiting to go up' : ''}
+    </p>
+    ${cloudSync.detail ? `<p style="font-size:11.5px; color:var(--danger); margin:-4px 0 8px;">${escapeHtml(cloudSync.detail)}</p>` : ''}
+    ${connectedSummary}
+    ${form}
+    <div id="cloudStatusMsg" style="font-size:12.5px; margin-top:8px; min-height:16px;"></div>`;
+
+  const setMsg = (msg, ok)=>{
+    const el = document.getElementById('cloudStatusMsg');
+    if(el){ el.style.color = ok === false ? 'var(--danger)' : (ok ? 'var(--good)' : 'var(--ink-soft)'); el.textContent = msg; }
+  };
+
+  const gen = document.getElementById('cloudGenFamily');
+  if(gen) gen.onclick = ()=>{ document.getElementById('cloudFamily').value = newFamilyId(); };
+
+  const copySql = document.getElementById('cloudCopySql');
+  if(copySql) copySql.onclick = async ()=>{
+    try{ await navigator.clipboard.writeText(CLOUD_SETUP_SQL); setMsg('SQL copied. Open the SQL editor, paste, and press Run.', true); }
+    catch(e){ setMsg('Copy failed — open "Show me what it does" and copy the SQL by hand.', false); }
+  };
+
+  /* Sends them to their own project's editor when the paste box already names
+     it, and to the dashboard's project picker when it doesn't. */
+  const openSql = document.getElementById('cloudOpenSql');
+  if(openSql) openSql.onclick = ()=>{
+    const box = document.getElementById('cloudPaste');
+    const parsed = box ? parseCloudPaste(box.value) : {};
+    window.open(cloudSqlEditorUrl(parsed.url || ''), '_blank', 'noopener');
+  };
+
+  const connect = document.getElementById('cloudConnect');
+  if(connect) connect.onclick = async ()=>{
+    const parsed = parseCloudPaste(document.getElementById('cloudPaste').value);
+    const familyEl = document.getElementById('cloudFamily');
+    const familyId = (familyEl && familyEl.value.trim()) || newFamilyId();
+    if(parsed.error){ setMsg(parsed.error, false); return; }
+    if(!parsed.key){ setMsg('Paste the project key — it starts with sb_publishable_ or eyJ.', false); return; }
+    if(!parsed.url){ setMsg('Paste the project URL too — it looks like https://abcdefgh.supabase.co.', false); return; }
+    connect.disabled = true;
+    setMsg('Connecting…');
+    try{
+      const outcome = await cloudSync.connect({ url: parsed.url, key: parsed.key, familyId });
+      cloudFormOpen = false;
+      renderCloudBlock();
+      toast(outcome === 'joined'
+        ? 'Joined the family copy — this device now shows the shared board. ✅'
+        : 'Family sync is on. This device\'s data is now the shared copy. ✅', 'success');
+      render();
+    }catch(err){
+      connect.disabled = false;
+      setMsg((err && err.message) || 'Couldn\'t connect.', false);
+    }
+  };
+
+  const syncNow = document.getElementById('cloudSyncNow');
+  if(syncNow) syncNow.onclick = async ()=>{
+    syncNow.disabled = true;
+    setMsg('Checking…');
+    try{
+      if(cloudSync.pendingPush) await cloudSync.push();
+      const result = await cloudSync.pull(false);
+      if(result === 'empty') await cloudSync.push();
+      renderCloudBlock();
+      setMsg(result === 'applied' ? 'Picked up newer changes from another device. ✅' : 'Everything is up to date. ✅', true);
+      render();
+    }catch(err){
+      renderCloudBlock();
+      setMsg((err && err.message) || 'Sync failed.', false);
+    }
+  };
+
+  const invite = document.getElementById('cloudInvite');
+  if(invite) invite.onclick = async ()=>{
+    try{
+      await navigator.clipboard.writeText(cloudInviteLink(cfg));
+      setMsg('Setup link copied. Open it on the other device — it joins this family and clears itself from the address bar.', true);
+    }catch(e){ setMsg('Copy failed — this browser blocked clipboard access.', false); }
+  };
+
+  const edit = document.getElementById('cloudEdit');
+  if(edit) edit.onclick = ()=>{ cloudFormOpen = !cloudFormOpen; renderCloudBlock(); };
+
+  const disconnect = document.getElementById('cloudDisconnect');
+  if(disconnect) disconnect.onclick = ()=>requireUnlock(()=>{
+    cloudSync.disconnect();
+    cloudFormOpen = true;
+    renderCloudBlock();
+    toast('Family sync is off. This device keeps its own copy; the cloud copy is untouched.', 'success');
+  });
+}
+
+/* An invite link points the app at somebody's database, so it always asks
+   first — the same reason a browser asks before sharing your location. */
+function cloudInviteModal(cfg){
+  openModal(`
+    <h3>☁️ Join family sync?</h3>
+    <p style="font-size:13px; line-height:1.6;">
+      This link sets Family Hub up to sync with <strong>${escapeHtml(cloudHost(cfg))}</strong>, family <code>${escapeHtml(cfg.familyId)}</code>.
+    </p>
+    <p style="font-size:12.5px; color:var(--ink-soft); line-height:1.6;">
+      Only continue if this came from your own household. This device will show that family's chores, to-dos, habits, points, budget and meals — replacing whatever is saved here now.
+    </p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="inviteNo">Not now</button>
+      <button class="btn btn-primary" id="inviteYes">Join</button>
+    </div>
+    <div id="inviteMsg" style="font-size:12.5px; color:var(--danger); min-height:16px;"></div>
+  `);
+  document.getElementById('inviteNo').onclick = ()=>closeModal();
+  document.getElementById('inviteYes').onclick = async (e)=>{
+    e.target.disabled = true;
+    try{
+      await cloudSync.connect(cfg);
+      closeModal();
+      render();
+      toast('Joined family sync. This device is now in step with the others. ✅', 'success');
+    }catch(err){
+      e.target.disabled = false;
+      document.getElementById('inviteMsg').textContent = (err && err.message) || 'Couldn\'t join.';
+    }
+  };
+}
+
+async function initCloudSync(){
+  updateCloudIndicator();
+  const cloudBtn = document.getElementById('cloudBtn');
+  if(cloudBtn) cloudBtn.onclick = familySyncModal;
+
+  document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState === 'visible') cloudSync.tick(); });
+  window.addEventListener('online',  ()=>cloudSync.tick());
+  window.addEventListener('offline', ()=>{ if(cloudSync.isOn()) cloudSync.setStatus('offline'); });
+
+  if(cloudSync.isOn()){
+    cloudSync.setStatus('connecting');
+    try{
+      const result = await cloudSync.pull(false);
+      if(result === 'empty') await cloudSync.push();   // this device seeds the family row
+      else if(result === 'applied') render();
+    }catch(err){
+      cloudSync.setStatus(err.offline ? 'offline' : 'error', err.message);
+    }
+    cloudSync.start();
+  }
+
+  const invite = takeInviteFromHash();
+  if(invite) cloudInviteModal(invite);
+}
+
 function syncModal(){
   const guideHtml = Object.entries(SYNC_GUIDES).map(([name,txt])=>
     `<details style="border:1px solid var(--line); border-radius:9px; padding:8px 10px; margin-bottom:6px;">
@@ -4338,6 +5031,8 @@ function attachHandlers(){
   });
   const exportBtn = document.getElementById('exportIcsBtn');
   if(exportBtn) exportBtn.onclick = syncModal;
+  const familySyncBtn = document.getElementById('familySyncBtn');
+  if(familySyncBtn) familySyncBtn.onclick = familySyncModal;
   const timeFormatSel = document.getElementById('timeFormatSel');
   if(timeFormatSel) timeFormatSel.onchange = ()=>{
     state.timeFormat = timeFormatSel.value === '24h' ? '24h' : '12h';
@@ -4401,6 +5096,7 @@ function shiftCal(dir){
     render();
     resetIdleTimer();
     initGoogleSync();
+    initCloudSync();
   }catch(err){
     console.error('Startup failed:', err);
     document.getElementById('mainContent').innerHTML = `<div class="card"><div class="empty">
