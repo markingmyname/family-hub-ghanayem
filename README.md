@@ -130,13 +130,22 @@ On its own, though, local storage only covers *that* device. To put the same boa
 
 ### Setting up family sync
 
-1. **Make a free project** at [supabase.com](https://supabase.com/dashboard/projects) — sign in with GitHub, pick any region near you. It asks for a database password you'll never need again.
-2. **Paste the project URL and key** into Settings → Family sync. Both sit behind the project's **Connect** button. Paste them together, in either order — the box sorts them out.
-3. **Run the setup SQL** — the panel's **Copy SQL** and **Open SQL editor** buttons put you in the right place. Paste, press Run.
+This copy already carries the household's project details, so there are two steps:
 
-Then press **Connect**. To add the next device, press **Copy setup link**, open that link on the phone or tablet, and tap **Join** — no retyping keys.
+1. **Run the setup SQL** — once for the whole house, not once per device. The panel's **Copy SQL** and **Open SQL editor** buttons put you in the right place. Paste, press Run.
+2. **Press Connect.**
 
-> Paste the **publishable** (or **anon**) key — the one meant to be public. A **secret** or **service role** key is the admin key and is refused, because every file this app serves is public.
+To add the next device, press **Copy setup link**, open that link on the phone or tablet, and tap **Join** — no retyping anything.
+
+Running your own copy? Make a free project at [supabase.com](https://supabase.com/dashboard/projects), then replace the URL and key in the panel — paste them together in either order and the box sorts them out.
+
+### How it's locked down
+
+The key in this page is the **publishable** one, and it is genuinely public — anyone can read it out of the page source. So the key isn't the lock.
+
+The table is sealed off from it entirely: no policies, no privileges. Every read and write goes through a `security definer` function that demands the **family ID**, and no query will list those IDs. That ID is random, never appears in this repo, and travels only in the setup links you send your own devices.
+
+A **secret** or **service role** key is refused outright if anyone tries to paste one in.
 
 ### What syncing does and doesn't do
 
@@ -160,7 +169,7 @@ Prefer to run it on Azure? Azure Database for PostgreSQL can't be reached from a
 - The parental PIN is stored **hashed (SHA-256)**, not in plain text
 - All user-entered text is HTML-escaped before display
 - Access tokens live only in the browser session and vanish when the tab closes; the Client IDs are not secrets
-- Family sync credentials are stored on each device, never in this repo — and admin-level database keys are rejected outright
+- The sync database is reachable only through functions that require the family ID — the publishable key on its own opens nothing, and admin-level keys are rejected
 - Uploaded images are validated and re-encoded before saving
 
 **Error handling**
