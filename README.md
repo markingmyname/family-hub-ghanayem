@@ -4,7 +4,7 @@ A shared family calendar, chore chart, to-do list, habit tracker, rewards board,
 
 **Live: https://markingmyname.github.io/family-hub-ghanayem/**
 
-That's the one link everyone opens. It's plain HTML, CSS, and JavaScript in a single file — no build step, no dependencies, no server.
+That's the one link everyone opens. It's plain HTML, CSS, and JavaScript in a single file — no build step, no dependencies, no server to run.
 
 ---
 
@@ -62,6 +62,7 @@ Finished chores, to-dos, and habits move into a collapsible **Completed** drawer
 
 ### Settings worth knowing
 
+- **Family sync** — put the same board on every device in the house (see [Where your data lives](#where-your-data-lives))
 - **Time format** — 12-hour (default) or 24-hour
 - **Second time zone** — show every event in a second zone as well, with a live clock strip
 - **Sleep mode** — how long before the screensaver takes over, from 5 minutes to an hour, or only on demand
@@ -123,9 +124,29 @@ Google, Outlook, Yahoo, and Cozi all read and write `.ics`, which is the bridge 
 
 ## Where your data lives
 
-Family Hub saves to **each browser's local storage**. That means it works offline and needs no server — but **data does not sync between devices**. Each phone, tablet, and computer keeps its own copy. Google/Outlook sync keeps *calendar events* consistent across devices; chores, to-dos, habits, points, budget, and meals stay local.
+Family Hub saves to **each browser's local storage** first. That's what makes it instant and what lets it work with no connection at all.
 
-For everyone to see the same live data, the app needs a small backend — **Firebase** or **Supabase** (both free-tier) drop into the `storageAdapter` at the top of the script.
+On its own, though, local storage only covers *that* device. To put the same board on every phone, tablet, and computer, connect a small cloud database — **Settings → Family sync**. It's free, takes about five minutes, and you do it once for the whole house.
+
+### Setting up family sync
+
+1. **Make a free project** at [supabase.com](https://supabase.com/dashboard/projects) — sign in with GitHub, pick any region near you. It asks for a database password you'll never need again.
+2. **Paste the project URL and key** into Settings → Family sync. Both sit behind the project's **Connect** button. Paste them together, in either order — the box sorts them out.
+3. **Run the setup SQL** — the panel's **Copy SQL** and **Open SQL editor** buttons put you in the right place. Paste, press Run.
+
+Then press **Connect**. To add the next device, press **Copy setup link**, open that link on the phone or tablet, and tap **Join** — no retyping keys.
+
+> Paste the **publishable** (or **anon**) key — the one meant to be public. A **secret** or **service role** key is the admin key and is refused, because every file this app serves is public.
+
+### What syncing does and doesn't do
+
+- **Everything shared syncs** — calendar, chores, to-dos, habits, points, rewards, budget, meals, people, settings.
+- **What each screen is looking at stays put.** The day you're on, the list you've opened, the person whose habits you're viewing — those are yours. Otherwise every screen in the house would jump to wherever someone else just tapped.
+- **Last change wins.** The whole board is saved as one document, so if two people edit in the same few seconds, the later save is the one kept. Rare in a household, and the alternative is a lot of machinery for a fridge-door app.
+- **Offline still works.** Edits save locally and go up when the connection returns; the ☁️ in the header shows what's happening.
+- **Free projects pause after a week of inactivity.** Normal use resets that clock. If it does pause, unpause it in the Supabase dashboard and everything is still there.
+
+Prefer to run it on Azure? Azure Database for PostgreSQL can't be reached from a browser directly — Postgres speaks its own protocol over TCP, not HTTP — so it needs an API tier in front of it, such as an Azure Function using a managed identity. That's a good setup, just not a five-minute one.
 
 **Storage limits matter for attachments.** Browser storage is a few megabytes in total. To-do image attachments are downscaled to 1000px and re-encoded as JPEG; other files are capped at 600 KB. That's fine for reference photos, not for a photo library.
 
@@ -139,6 +160,7 @@ For everyone to see the same live data, the app needs a small backend — **Fire
 - The parental PIN is stored **hashed (SHA-256)**, not in plain text
 - All user-entered text is HTML-escaped before display
 - Access tokens live only in the browser session and vanish when the tab closes; the Client IDs are not secrets
+- Family sync credentials are stored on each device, never in this repo — and admin-level database keys are rejected outright
 - Uploaded images are validated and re-encoded before saving
 
 **Error handling**
