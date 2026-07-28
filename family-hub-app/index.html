@@ -1045,11 +1045,14 @@ async function saveLocalOnly(){
    a household, and the alternative (per-field merge) is a lot of machinery for
    a fridge-door app.
 
-   Credentials live in this browser's storage and are never committed. This is a
-   public static site, so anything checked in here would be published, not kept. */
+   The table itself is sealed off. Nothing here touches it directly: reads and
+   writes go through three `security definer` functions that each demand the
+   family id, and no query will list those ids. That matters because this is a
+   public page — the publishable key inside it can be read by anyone, so the key
+   cannot be the lock. The family id is, and it appears only on the household's
+   own devices and in the setup links they send each other. */
 const CLOUD_CONFIG_KEY = 'fh-cloud-config';
 const CLOUD_DEVICE_KEY = 'fh-device-id';
-const CLOUD_TABLE      = 'family_hub_state';
 const CLOUD_POLL_MS    = 8000;   // how often a visible tab checks for news
 const CLOUD_PUSH_MS    = 700;    // debounce, so a burst of edits is one write
 
@@ -1189,9 +1192,8 @@ function cloudErrorMessage(status, body){
   const text = (body||'').toLowerCase();
   if(status === 401 || status === 403)
     return 'That key was rejected. Copy the publishable (or anon) key again — and check the setup SQL ran.';
-  if(status === 404 && (text.includes('relation') || text.includes(CLOUD_TABLE)))
-    return `The ${CLOUD_TABLE} table isn\'t there yet — run the setup SQL below, then try again.`;
-  if(status === 404) return 'That project URL didn\'t answer. Check it for a typo.';
+  if(status === 404 || text.includes('schema cache') || text.includes('could not find the function'))
+    return 'The setup SQL hasn\'t run on this project yet — press Copy SQL, open the SQL editor, press Run, then try again.';
   if(status === 413) return 'The family copy is too large to send. Try smaller profile photos or fewer attachments.';
   if(status >= 500) return 'The cloud database had a server error. It usually clears on its own.';
   return `The cloud database replied ${status}.`;
@@ -1217,7 +1219,6 @@ const cloudSync = {
     renderCloudBlock();          // no-op unless the sync panel happens to be open
   },
 
-  _url(cfg, qs){ return `${cfg.url}/rest/v1/${CLOUD_TABLE}?${qs}`; },
   _headers(cfg, extra){
     /* Legacy anon keys are JWTs and belong in both headers. The newer
        publishable keys are not JWTs, and Supabase rejects them when they turn
@@ -1225,6 +1226,23 @@ const cloudSync = {
     const headers = { apikey: cfg.key };
     if(/^eyJ/.test(cfg.key)) headers.Authorization = `Bearer ${cfg.key}`;
     return Object.assign(headers, extra || {});
+  },
+
+  /* Every call goes through a database function rather than at the table.
+     The table itself is unreachable with this key, so knowing the key is not
+     enough — you also have to know the family id, and there is no query that
+     will list those for you. That id lives only on the household's devices and
+     inside the setup links they send each other. */
+  async _rpc(fn, args){
+    const cfg = cloudConfig();
+    if(!cfg) throw new Error('Family sync isn\'t set up on this device.');
+    const res = await this._fetch(`${cfg.url}/rest/v1/rpc/${fn}`, {
+      method: 'POST',
+      headers: this._headers(cfg, { 'Content-Type':'application/json' }),
+      body: JSON.stringify(args)
+    });
+    const text = await res.text();
+    return text ? JSON.parse(text) : null;
   },
 
   async _fetch(url, opts){
@@ -1246,15 +1264,13 @@ const cloudSync = {
   /* Just the revision marker — a few bytes, which is what makes polling cheap. */
   async fetchMeta(){
     const cfg = cloudConfig(); if(!cfg) return null;
-    const res = await this._fetch(this._url(cfg, `family_id=eq.${encodeURIComponent(cfg.familyId)}&select=rev,updated_at,updated_by`), { headers: this._headers(cfg) });
-    const rows = await res.json();
+    const rows = await this._rpc('family_hub_meta', { fid: cfg.familyId });
     return (rows && rows[0]) || null;
   },
 
   async fetchRow(){
     const cfg = cloudConfig(); if(!cfg) return null;
-    const res = await this._fetch(this._url(cfg, `family_id=eq.${encodeURIComponent(cfg.familyId)}&select=*`), { headers: this._headers(cfg) });
-    const rows = await res.json();
+    const rows = await this._rpc('family_hub_get', { fid: cfg.familyId });
     return (rows && rows[0]) || null;
   },
 
@@ -1301,27 +1317,17 @@ const cloudSync = {
     const cfg = cloudConfig();
     this._busy = true;
     try{
-      /* Step past the highest revision anyone has written, so a device that has
-         been asleep doesn't reuse a number and confuse the others. */
-      let base = this.rev;
-      try{
-        const meta = await this.fetchMeta();
-        if(meta) base = Math.max(base, Number(meta.rev) || 0);
-      }catch(e){ /* couldn't check — our own number still moves forward */ }
-
-      const res = await this._fetch(this._url(cfg, 'on_conflict=family_id'), {
-        method: 'POST',
-        headers: this._headers(cfg, { 'Content-Type':'application/json', Prefer:'resolution=merge-duplicates,return=representation' }),
-        body: JSON.stringify([{
-          family_id: cfg.familyId,
-          payload: cloudPayload(),
-          rev: base + 1,
-          updated_by: deviceId(),
-          updated_at: new Date().toISOString()
-        }])
+      /* The database picks the revision number: it takes whichever is higher,
+         our proposal or one past what's already stored. A device that has been
+         asleep therefore can't reuse a number and confuse the others, and it
+         takes one round trip instead of two to work that out. */
+      const stored = await this._rpc('family_hub_put', {
+        fid: cfg.familyId,
+        body: cloudPayload(),
+        newrev: this.rev + 1,
+        device: deviceId()
       });
-      const rows = await res.json();
-      this.rev = (rows && rows[0] && Number(rows[0].rev)) || base + 1;
+      this.rev = Number(stored) || this.rev + 1;
       this.pendingPush = false;
       this.lastSyncAt = Date.now();
       this.setStatus('live');
@@ -4187,7 +4193,10 @@ const SYNC_GUIDES = {
 /* ---- Family sync panel ----
    Deliberately separate from the calendar Sync panel: that one is about other
    people's calendars, this one is about Family Hub's own data. */
-const CLOUD_SETUP_SQL = `create table if not exists family_hub_state (
+const CLOUD_SETUP_SQL = `-- Family Hub — run once per household, in the Supabase SQL editor.
+-- Safe to run again: it tidies up after the earlier, looser version.
+
+create table if not exists family_hub_state (
   family_id  text primary key,
   payload    text not null,
   rev        bigint not null default 0,
@@ -4197,9 +4206,55 @@ const CLOUD_SETUP_SQL = `create table if not exists family_hub_state (
 
 alter table family_hub_state enable row level security;
 
-create policy "family hub read"   on family_hub_state for select using (true);
-create policy "family hub insert" on family_hub_state for insert with check (true);
-create policy "family hub update" on family_hub_state for update using (true) with check (true);`;
+-- The table is not reachable with a public key. No policies, no privileges:
+-- every request has to come through the three functions below, and each of
+-- those demands the family id. There is no query that will list ids for you.
+drop policy if exists "family hub read"   on family_hub_state;
+drop policy if exists "family hub insert" on family_hub_state;
+drop policy if exists "family hub update" on family_hub_state;
+revoke all on table family_hub_state from anon, authenticated;
+
+-- Poll: the revision marker only, which is what keeps checking cheap.
+create or replace function family_hub_meta(fid text)
+returns table (rev bigint, updated_at timestamptz, updated_by text)
+language sql security definer set search_path = public as $$
+  select rev, updated_at, updated_by from family_hub_state where family_id = fid;
+$$;
+
+-- Read the family's board.
+create or replace function family_hub_get(fid text)
+returns table (payload text, rev bigint, updated_at timestamptz, updated_by text)
+language sql security definer set search_path = public as $$
+  select payload, rev, updated_at, updated_by from family_hub_state where family_id = fid;
+$$;
+
+-- Write it back. The database picks the revision, so two devices can't collide.
+create or replace function family_hub_put(fid text, body text, newrev bigint, device text)
+returns bigint
+language plpgsql security definer set search_path = public as $$
+declare stored bigint;
+begin
+  if fid is null or length(fid) < 12 then
+    raise exception 'family id is too short to be safe';
+  end if;
+  insert into family_hub_state as t (family_id, payload, rev, updated_by, updated_at)
+  values (fid, body, coalesce(newrev, 1), device, now())
+  on conflict (family_id) do update
+    set payload    = excluded.payload,
+        rev        = greatest(t.rev + 1, excluded.rev),
+        updated_by = excluded.updated_by,
+        updated_at = now()
+  returning t.rev into stored;
+  return stored;
+end;
+$$;
+
+revoke all on function family_hub_meta(text) from public;
+revoke all on function family_hub_get(text) from public;
+revoke all on function family_hub_put(text, text, bigint, text) from public;
+grant execute on function family_hub_meta(text) to anon, authenticated;
+grant execute on function family_hub_get(text) to anon, authenticated;
+grant execute on function family_hub_put(text, text, bigint, text) to anon, authenticated;`;
 
 let cloudFormOpen = false;
 
@@ -4280,9 +4335,9 @@ function renderCloudBlock(){
       </details>
 
       <p style="font-size:11.5px; color:var(--ink-soft); line-height:1.5; margin:10px 0 0;">
-        The key you paste is the <strong>publishable</strong> (or <strong>anon</strong>) one — meant to be public. A
-        <strong>secret</strong> or <strong>service role</strong> key is the admin key and is refused here: every file this app
-        serves is public, so pasting one would publish it.
+        The key here is the <strong>publishable</strong> one — it ships inside this page, so treat it as public. On its own it
+        can't reach anything: every request goes through a database function that demands the family ID, and that ID travels
+        only between your own devices. A <strong>secret</strong> or <strong>service role</strong> key is refused outright.
       </p>
     </div>` : '';
 
