@@ -1089,7 +1089,12 @@ function normalizeCloudUrl(v){
   if(!/^https?:\/\//i.test(u)) u = 'https://' + u;
   try{
     const parsed = new URL(u);
-    return parsed.protocol === 'https:' ? parsed.origin : '';
+    if(parsed.protocol !== 'https:') return '';
+    /* A pasted line like NEXT_PUBLIC_SUPABASE_URL=https://... will happily parse
+       as a URL whose "host" is the variable name. Insist on something that
+       actually looks like a hostname. */
+    if(!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(parsed.hostname)) return '';
+    return parsed.origin;
   }catch(e){ return ''; }
 }
 function cloudHost(cfg){
@@ -1126,13 +1131,23 @@ function supabaseKeyInfo(key){
 }
 
 /* One paste box beats three labelled ones. Takes whatever comes off the
-   Supabase dashboard — URL and key, either order, on one line or several —
-   and works out which is which. */
+   Supabase dashboard — URL and key, either order, on one line or several. The
+   Connect dialog hands out environment-variable lines rather than bare values,
+   so NAME=value and surrounding quotes get peeled off before anything else. */
 function parseCloudPaste(text){
   const parts = String(text||'').split(/[\s,]+/).map(p=>p.trim()).filter(Boolean);
+  const tidy = (p)=>{
+    let clean = p.replace(/^["'<]+|["'>.,;]+$/g,'');
+    const eq = clean.indexOf('=');
+    /* Only treat it as NAME=value when the left side reads like a variable
+       name — never chop a key that happens to contain '='. */
+    if(eq > 0 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(clean.slice(0, eq))) clean = clean.slice(eq + 1);
+    return clean.replace(/^["'<]+|["'>.,;]+$/g,'');
+  };
   let url = '', key = '';
   parts.forEach(p=>{
-    const clean = p.replace(/^["'<]+|["'>.,;]+$/g,'');
+    const clean = tidy(p);
+    if(!clean) return;
     if(!key && (/^sb_(publishable|secret)_/i.test(clean) || /^eyJ[\w-]+\./.test(clean))) key = clean;
     else if(!url && /supabase\.(co|in|net)/i.test(clean) && !/^eyJ/.test(clean)) url = normalizeCloudUrl(clean);
   });
