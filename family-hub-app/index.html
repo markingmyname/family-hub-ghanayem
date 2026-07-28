@@ -1105,7 +1105,11 @@ function normalizeCloudUrl(v){
        as a URL whose "host" is the variable name. Insist on something that
        actually looks like a hostname. */
     if(!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(parsed.hostname)) return '';
-    return parsed.origin;
+    /* The dashboard shows two near-identical hostnames: the API one, and
+       db.<ref>.supabase.co for direct Postgres connections. Only the first
+       answers HTTP, so quietly correct the easy mistake. */
+    const host = parsed.hostname.replace(/^db\.(?=[a-z0-9-]+\.supabase\.)/i, '');
+    return 'https://' + host;
   }catch(e){ return ''; }
 }
 function cloudHost(cfg){
