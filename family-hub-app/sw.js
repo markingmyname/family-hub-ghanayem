@@ -23,9 +23,18 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  const url = new URL(req.url);
+
+  // Only the app shell is ours to serve. Family sync talks to a cloud database
+  // on another origin, and those calls must go straight to the network:
+  // wrapping a POST here would hand back an empty cache miss instead of the
+  // real network error, and the app would misread a failed save as a success.
+  if (req.method !== 'GET' || url.origin !== self.location.origin) return;
+
   // Network-first for the app shell so updates show up quickly;
   // falls back to cache if offline.
   event.respondWith(
-    fetch(event.request).catch(() => caches.match(event.request))
+    fetch(req).catch(() => caches.match(req))
   );
 });
