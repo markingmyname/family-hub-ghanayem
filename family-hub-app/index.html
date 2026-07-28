@@ -1105,7 +1105,11 @@ function normalizeCloudUrl(v){
        as a URL whose "host" is the variable name. Insist on something that
        actually looks like a hostname. */
     if(!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(parsed.hostname)) return '';
-    return parsed.origin;
+    /* The dashboard shows two near-identical hostnames: the API one, and
+       db.<ref>.supabase.co for direct Postgres connections. Only the first
+       answers HTTP, so quietly correct the easy mistake. */
+    const host = parsed.hostname.replace(/^db\.(?=[a-z0-9-]+\.supabase\.)/i, '');
+    return 'https://' + host;
   }catch(e){ return ''; }
 }
 function cloudHost(cfg){
@@ -1146,6 +1150,22 @@ function supabaseKeyInfo(key){
    Connect dialog hands out environment-variable lines rather than bare values,
    so NAME=value and surrounding quotes get peeled off before anything else. */
 function parseCloudPaste(text){
+  /* A setup link from a device that's already syncing carries all three values,
+     the family id included. That's what makes a second phone JOIN the family
+     rather than quietly starting one of its own. Checked first, because the
+     link contains a URL and a key that would otherwise be read on their own. */
+  const invite = /#fh-sync=([A-Za-z0-9+/=%_-]+)/.exec(String(text||''));
+  if(invite){
+    try{
+      const bin = atob(decodeURIComponent(invite[1]));
+      const cfg = JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, c=>c.charCodeAt(0))));
+      const url = normalizeCloudUrl(cfg.url);
+      if(url && cfg.key && cfg.familyId){
+        return { url, key: String(cfg.key).trim(), familyId: String(cfg.familyId).trim(), kind: 'invite' };
+      }
+    }catch(e){ /* not a usable link — fall through and read it as plain values */ }
+  }
+
   const parts = String(text||'').split(/[\s,]+/).map(p=>p.trim()).filter(Boolean);
   const tidy = (p)=>{
     let clean = p.replace(/^["'<]+|["'>.,;]+$/g,'');
@@ -4311,11 +4331,13 @@ function renderCloudBlock(){
           </details>
         </li>
         <li style="margin-bottom:12px;">
-          <strong style="color:var(--ink);">Press Connect.</strong> The project URL and key below are this family's, already
-          filled in. Running your own copy instead? Replace both — paste them together in either order, and this box sorts
-          them out.
-          <textarea id="cloudPaste" rows="3" placeholder="https://abcdefgh.supabase.co&#10;sb_publishable_… or eyJhbGciOi…"
+          <strong style="color:var(--ink);">Adding another device?</strong> Paste the <strong>setup link</strong> from a phone or
+          computer that's already syncing — press <em>Copy setup link</em> over there. That link is what carries the family
+          across; without it, this device starts a brand new empty family of its own.
+          <br>Setting the household up for the very first time? Leave the details below exactly as they are and press Connect.
+          <textarea id="cloudPaste" rows="3" placeholder="Paste a setup link — or a project URL and key"
             style="width:100%; box-sizing:border-box; margin-top:6px; font-size:12px; font-family:inherit; padding:8px; border:1px solid var(--line); border-radius:8px; resize:vertical;">${escapeHtml(cfg ? cfg.url + '\n' + cfg.key : DEFAULT_CLOUD_URL + '\n' + DEFAULT_CLOUD_KEY)}</textarea>
+          <div id="cloudPasteHint" style="font-size:11.5px; margin-top:4px; min-height:15px;"></div>
         </li>
       </ol>
       <button class="btn btn-primary" id="cloudConnect" style="margin-top:4px;">${on ? 'Save and reconnect' : 'Connect'}</button>
@@ -4374,10 +4396,37 @@ function renderCloudBlock(){
   };
 
   const connect = document.getElementById('cloudConnect');
+
+  /* Say out loud which of the two things pressing the button will do, because
+     "start a new family" and "join the existing one" look identical otherwise
+     and only one of them is what someone setting up a second phone wants. */
+  const pasteBox = document.getElementById('cloudPaste');
+  const refreshHint = ()=>{
+    const hint = document.getElementById('cloudPasteHint');
+    if(!hint || !pasteBox || !connect) return;
+    const parsed = parseCloudPaste(pasteBox.value);
+    if(parsed.error){
+      hint.style.color = 'var(--danger)';
+      hint.textContent = parsed.error;
+      connect.textContent = on ? 'Save and reconnect' : 'Connect';
+    }else if(parsed.familyId){
+      hint.style.color = 'var(--good)';
+      hint.textContent = `Setup link recognised — this device will join family ${parsed.familyId}.`;
+      connect.textContent = 'Join this family';
+    }else{
+      hint.style.color = 'var(--ink-soft)';
+      hint.textContent = on ? '' : 'No setup link — pressing Connect starts a new family on this device.';
+      connect.textContent = on ? 'Save and reconnect' : 'Connect';
+    }
+  };
+  if(pasteBox){ pasteBox.oninput = refreshHint; refreshHint(); }
+
   if(connect) connect.onclick = async ()=>{
     const parsed = parseCloudPaste(document.getElementById('cloudPaste').value);
     const familyEl = document.getElementById('cloudFamily');
-    const familyId = (familyEl && familyEl.value.trim()) || newFamilyId();
+    /* A setup link brings its own family id and must win: that's the whole
+       point of it. Otherwise fall back to the box, then to a fresh id. */
+    const familyId = parsed.familyId || (familyEl && familyEl.value.trim()) || newFamilyId();
     if(parsed.error){ setMsg(parsed.error, false); return; }
     if(!parsed.key){ setMsg('Paste the project key — it starts with sb_publishable_ or eyJ.', false); return; }
     if(!parsed.url){ setMsg('Paste the project URL too — it looks like https://abcdefgh.supabase.co.', false); return; }
