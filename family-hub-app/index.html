@@ -4778,11 +4778,6 @@ async function initCloudSync(){
   }
 }
 
-// Events currently filed under a person rather than the whole family.
-function assignedEventCount(){
-  return state.events.filter(e=>eventPersonIds(e).length).length;
-}
-
 function syncModal(){
   const guideHtml = Object.entries(SYNC_GUIDES).map(([name,txt])=>
     `<details style="border:1px solid var(--line); border-radius:9px; padding:8px 10px; margin-bottom:6px;">
@@ -4800,8 +4795,18 @@ function syncModal(){
         Keep it on the family calendar unless a connected account belongs to one person — anything filed under a
         person only shows when you pick them, while family events show under everyone.
       </p>
-      ${assignedEventCount() ? `<button class="btn btn-ghost" id="moveSyncedToFamily" style="font-size:12px; margin-top:8px;">Move all ${assignedEventCount()} event${assignedEventCount()===1?'':'s'} to ${escapeHtml(familyLabel())}</button>
-      <p style="font-size:11.5px; color:var(--ink-soft); line-height:1.5; margin:6px 0 0;">Clears every personal calendar in one go — afterwards each person is empty until you assign something to them.</p>` : ''}
+      ${state.events.length ? `
+      <div style="border-top:1px solid var(--line); margin-top:10px; padding-top:10px;">
+        <label style="display:block; margin-bottom:4px;">Move every event at once</label>
+        <div class="add-row" style="margin:0;">
+          <select id="bulkAssignTarget">${assignTargetOptionsHtml('')}</select>
+          <button class="btn btn-ghost" id="moveAllEvents" style="font-size:12px;">Move all ${state.events.length}</button>
+        </div>
+        <p style="font-size:11.5px; color:var(--ink-soft); line-height:1.5; margin:6px 0 0;">
+          Puts all ${state.events.length} event${state.events.length===1?'':'s'} on the one calendar, replacing whoever they're
+          assigned to now. Handy for starting clean — there's no undo, so pick deliberately.
+        </p>
+      </div>` : ''}
     </div>
     <div class="field"><label>Choose an .ics file (exported from any calendar app)</label><input type="file" accept=".ics,text/calendar" id="syncFile"></div>
     <div id="syncResult" style="font-size:13px; min-height:18px; color:var(--good); font-weight:600;"></div>
@@ -4864,15 +4869,15 @@ function syncModal(){
       : `Synced events will go to ${familyLabel()}, where everyone sees them.`, 'success');
   };
 
-  const moveBtn = document.getElementById('moveSyncedToFamily');
+  const moveBtn = document.getElementById('moveAllEvents');
   if(moveBtn) moveBtn.onclick = ()=>requireUnlock(async ()=>{
-    let moved = 0;
-    state.events.forEach(e=>{
-      if(eventPersonIds(e).length){ e.personIds = []; moved++; }
-    });
+    const target = document.getElementById('bulkAssignTarget').value;
+    const owner = target ? [target] : [];
+    const moved = state.events.length;
+    state.events.forEach(e=>{ e.personIds = owner.slice(); });
     await saveState();
     closeModal(); render();
-    toast(`Moved ${moved} event${moved===1?'':'s'} to ${familyLabel()}. Everyone's own calendar is now empty.`, 'success');
+    toast(`Moved ${moved} event${moved===1?'':'s'} to ${target ? personById(target).name : familyLabel()}.`, 'success');
   });
   const clearBtn = document.getElementById('clearImported');
   if(clearBtn) clearBtn.onclick = ()=>requireUnlock(()=>{
