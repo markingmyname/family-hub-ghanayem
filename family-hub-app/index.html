@@ -633,7 +633,7 @@ function defaultState(){
     pin: '1234',
     calView: 'month',
     calDate: todayStr(),
-    calFilter: 'all',
+    calFilter: [],
     syncAssignTo: '',
     habitMonth: monthStr(new Date()),
     habitPersonId: 'p1',
@@ -911,7 +911,8 @@ function seriesMembers(seriesId){
 
 function migrateState(s){
   if(!s.budget) s.budget = { transactions: [] };
-  if(!s.calFilter) s.calFilter = 'all';
+  // Was a single id or 'all' before people could pick several at once.
+  if(!Array.isArray(s.calFilter)) s.calFilter = (s.calFilter && s.calFilter !== 'all') ? [s.calFilter] : [];
   // '' means the family calendar — the catch-all everyone sees.
   if(s.syncAssignTo === undefined) s.syncAssignTo = '';
   if(s.syncAssignTo && !(s.people||[]).some(p=>p.id === s.syncAssignTo)) s.syncAssignTo = '';
@@ -1663,11 +1664,18 @@ function eventPersonIds(e){
 function isFamilyEvent(e){ return eventPersonIds(e).length === 0; }
 function eventPeople(e){ return eventPersonIds(e).map(personById).filter(Boolean); }
 function familyLabel(){ return state.familyLabel || 'Family calendar'; }
-/* The family tab is the whole household; a person's tab is strictly their own
-   diary, so family events stay out of it rather than padding every column. */
+/* The family tab is the whole household; picking people narrows the view to
+   just their own diaries, and several can be on at once. An empty selection is
+   the family tab. */
+function calFilterIds(){
+  const f = state && state.calFilter;
+  if(Array.isArray(f)) return f.filter(id=>personById(id));
+  return (f && f !== 'all' && personById(f)) ? [f] : [];
+}
 function eventMatchesFilter(e, filter){
-  if(filter === 'all') return true;
-  return eventPersonIds(e).includes(filter);
+  const ids = Array.isArray(filter) ? filter : ((filter && filter !== 'all') ? [filter] : []);
+  if(!ids.length) return true;
+  return eventPersonIds(e).some(id=>ids.includes(id));
 }
 /* One person keeps their own colour; several share the chip as equal bands;
    a family event uses the neutral board colour so it reads as "everyone". */
@@ -1958,8 +1966,9 @@ function renderCalendar(){
     label = `${MONTHS[start.getMonth()].slice(0,3)} ${start.getDate()} – ${MONTHS[end.getMonth()].slice(0,3)} ${end.getDate()}`;
   } else label = `${DOW[d.getDay()]}, ${MONTHS[d.getMonth()]} ${d.getDate()}`;
 
-  const filterChips = `<span class="person-chip all-chip ${state.calFilter==='all'?'active':''}" data-calfilter="all">🗓️ ${escapeHtml(state.familyLabel || 'Family calendar')}</span>` +
-    state.people.map(p=>`<span class="person-chip ${state.calFilter===p.id?'active':''}" data-calfilter="${p.id}">${avatarHtml(p,'sm')}${escapeHtml(p.name)}</span>`).join('');
+  const selected = calFilterIds();
+  const filterChips = `<span class="person-chip all-chip ${selected.length?'':'active'}" data-calfilter="all">🗓️ ${escapeHtml(state.familyLabel || 'Family calendar')}</span>` +
+    state.people.map(p=>`<span class="person-chip ${selected.includes(p.id)?'active':''}" data-calfilter="${p.id}" title="Tap to add or remove — you can pick several">${avatarHtml(p,'sm')}${escapeHtml(p.name)}</span>`).join('');
 
   const connectedNote = anyCalendarConnected()
     ? ''
@@ -2009,7 +2018,7 @@ function renderCalendar(){
 function startOfWeek(d){ const r=new Date(d); r.setDate(r.getDate()-r.getDay()); return r; }
 function visibleEvents(dateStr){
   const evs = state.events.filter(e=>e.date===dateStr);
-  return state.calFilter==='all' ? evs : evs.filter(e=>eventMatchesFilter(e, state.calFilter));
+  return evs.filter(e=>eventMatchesFilter(e, calFilterIds()));
 }
 
 function renderMonthGrid(d){
@@ -2107,8 +2116,9 @@ function renderWeekGrid(d){
 function renderDayColumns(d){
   const ds = fmtDate(d);
   const dayEvents = state.events.filter(e=>e.date===ds).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
-  const visible = dayEvents.filter(e=>eventMatchesFilter(e, state.calFilter));
-  const people = state.calFilter==='all' ? state.people : state.people.filter(p=>p.id===state.calFilter);
+  const selected = calFilterIds();
+  const visible = dayEvents.filter(e=>eventMatchesFilter(e, selected));
+  const people = selected.length ? state.people.filter(p=>selected.includes(p.id)) : state.people;
 
   /* One hour window shared by every column, so the rows line up. Defaults to a
      waking day and stretches to cover anything outside it. */
@@ -5137,7 +5147,12 @@ function attachHandlers(){
   const syncBtn = document.getElementById('syncBtn');
   if(syncBtn) syncBtn.onclick = ()=>runCalendarSync(syncBtn);
   document.querySelectorAll('[data-calview]').forEach(b=>b.onclick = ()=>{ state.calView = b.dataset.calview; saveState(); render(); });
-  document.querySelectorAll('[data-calfilter]').forEach(b=>b.onclick = ()=>{ state.calFilter = b.dataset.calfilter; saveState(); render(); });
+  document.querySelectorAll('[data-calfilter]').forEach(b=>b.onclick = ()=>{
+    const v = b.dataset.calfilter;
+    const sel = calFilterIds();
+    state.calFilter = v === 'all' ? [] : (sel.includes(v) ? sel.filter(id=>id!==v) : sel.concat(v));
+    saveState(); render();
+  });
   const prev = document.getElementById('calPrev'), next = document.getElementById('calNext'), today = document.getElementById('calToday');
   if(prev) prev.onclick = ()=>shiftCal(-1);
   if(next) next.onclick = ()=>shiftCal(1);
@@ -5475,7 +5490,7 @@ function shiftCal(dir){
 (async function init(){
   try{
     await loadState();
-    state.calFilter = 'all';        // every session opens on the family calendar
+    state.calFilter = [];           // every session opens on the family calendar
     updateLockIndicator();
     buildKeypad();
     render();
