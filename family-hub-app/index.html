@@ -4403,13 +4403,17 @@ function familySyncModal(){
     <div id="cloudBlock"></div>
     <div class="modal-actions"><button class="btn btn-ghost" id="cloudClose">Close</button></div>
   `);
-  renderCloudBlock();
+  renderCloudBlock(true);
   document.getElementById('cloudClose').onclick = ()=>{ closeModal(); render(); };
 }
 
-function renderCloudBlock(){
+/* `force` marks a redraw the person asked for. Background status updates leave
+   an open form alone — a poll landing mid-keystroke used to wipe whatever was
+   half-typed into it. */
+function renderCloudBlock(force){
   const block = document.getElementById('cloudBlock');
   if(!block) return;
+  if(!force && (codeFormOpen || cloudFormOpen)) return;
   const cfg = cloudConfig();
   const on = !!cfg;
 
@@ -4455,7 +4459,7 @@ function renderCloudBlock(){
       </p>
       <div class="add-row" style="margin:0;">
         <input id="newFamilyCode" value="${escapeHtml(cfg.familyId)}" placeholder="family-ghanayem-7k3p">
-        <button class="btn btn-ghost" id="addCodeSuffix" style="font-size:12px;">Add random bit</button>
+        <button class="btn btn-ghost" id="addCodeSuffix" style="font-size:12px;">+ Random 6</button>
       </div>
       <div id="codeHint" style="font-size:11.5px; margin-top:6px; min-height:15px;"></div>
       <button class="btn btn-primary" id="saveFamilyCode" style="margin-top:6px;">Move the family to this code</button>
@@ -4541,7 +4545,7 @@ function renderCloudBlock(){
       cloudSync.applyRemote(JSON.parse(raw));
       localStorage.removeItem(PREJOIN_BACKUP_KEY);
       await saveState();
-      renderCloudBlock(); render();
+      renderCloudBlock(true); render();
       toast(`Restored: ${state.people.map(p=>p.name).join(', ')}.`, 'success');
     }catch(e){ setMsg('That backup could not be read.', false); }
   });
@@ -4549,7 +4553,7 @@ function renderCloudBlock(){
   const dropBackup = document.getElementById('cloudDropBackup');
   if(dropBackup) dropBackup.onclick = ()=>{
     try{ localStorage.removeItem(PREJOIN_BACKUP_KEY); }catch(e){}
-    renderCloudBlock();
+    renderCloudBlock(true);
   };
 
   const copySql = document.getElementById('cloudCopySql');
@@ -4607,7 +4611,7 @@ function renderCloudBlock(){
     try{
       const outcome = await cloudSync.connect({ url: parsed.url, key: parsed.key, familyId }, { mustExist: !!parsed.familyId });
       cloudFormOpen = false;
-      renderCloudBlock();
+      renderCloudBlock(true);
       toast(outcome === 'joined'
         ? `Joined — now showing ${state.people.map(p=>p.name).join(', ')}. ✅`
         : 'Family sync is on. This device\'s data is now the shared copy. ✅', 'success');
@@ -4626,11 +4630,11 @@ function renderCloudBlock(){
       if(cloudSync.pendingPush) await cloudSync.push();
       const result = await cloudSync.pull(false);
       if(result === 'empty') await cloudSync.push();
-      renderCloudBlock();
+      renderCloudBlock(true);
       setMsg(result === 'applied' ? 'Picked up newer changes from another device. ✅' : 'Everything is up to date. ✅', true);
       render();
     }catch(err){
-      renderCloudBlock();
+      renderCloudBlock(true);
       setMsg((err && err.message) || 'Sync failed.', false);
     }
   };
@@ -4652,10 +4656,10 @@ function renderCloudBlock(){
   };
 
   const edit = document.getElementById('cloudEdit');
-  if(edit) edit.onclick = ()=>{ cloudFormOpen = !cloudFormOpen; renderCloudBlock(); };
+  if(edit) edit.onclick = ()=>{ cloudFormOpen = !cloudFormOpen; renderCloudBlock(true); };
 
   const renameBtn = document.getElementById('cloudRenameFamily');
-  if(renameBtn) renameBtn.onclick = ()=>{ codeFormOpen = !codeFormOpen; renderCloudBlock(); };
+  if(renameBtn) renameBtn.onclick = ()=>{ codeFormOpen = !codeFormOpen; renderCloudBlock(true); };
 
   const codeInput = document.getElementById('newFamilyCode');
   const codeHint = document.getElementById('codeHint');
@@ -4676,8 +4680,11 @@ function renderCloudBlock(){
 
   const addSuffix = document.getElementById('addCodeSuffix');
   if(addSuffix) addSuffix.onclick = ()=>{
-    codeInput.value = normalizeFamilyCode(codeInput.value) + '-' + Math.random().toString(36).slice(2,7);
+    // Six characters of noise is enough to stop the code being guessed.
+    const suffix = Math.random().toString(36).slice(2,8).padEnd(6,'x').slice(0,6);
+    codeInput.value = normalizeFamilyCode(codeInput.value) + '-' + suffix;
     refreshCodeHint();
+    codeInput.focus();
   };
 
   const saveCode = document.getElementById('saveFamilyCode');
@@ -4690,7 +4697,7 @@ function renderCloudBlock(){
     try{
       await cloudSync.changeFamilyCode(code);
       codeFormOpen = false;
-      renderCloudBlock();
+      renderCloudBlock(true);
       setMsg(`Done. Your other devices will follow within about 8 seconds — no retyping needed.`, true);
       toast(`Family code is now ${code}.`, 'success');
     }catch(err){
@@ -4703,7 +4710,7 @@ function renderCloudBlock(){
   if(disconnect) disconnect.onclick = ()=>requireUnlock(()=>{
     cloudSync.disconnect();
     cloudFormOpen = true;
-    renderCloudBlock();
+    renderCloudBlock(true);
     toast('Family sync is off. This device keeps its own copy; the cloud copy is untouched.', 'success');
   });
 }
