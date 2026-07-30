@@ -1500,7 +1500,11 @@ const cloudSync = {
     if(newId === cfg.familyId) throw new Error('That\'s already this family\'s code.');
 
     const taken = await this._rpc('family_hub_meta', { fid: newId });
-    if(taken && taken[0]) throw new Error('That code already belongs to a family. To put this device on it, press Cancel, then Change settings, paste the code and press Join this family.');
+    if(taken && taken[0]){
+      const err = new Error('That code already belongs to a family.');
+      err.codeExists = true;
+      throw err;
+    }
 
     const stored = await this._rpc('family_hub_put', {
       fid: newId, body: cloudPayload(), newrev: 1, device: deviceId()
@@ -4712,6 +4716,27 @@ function renderCloudBlock(force){
       toast(`Family code is now ${code}.`, 'success');
     }catch(err){
       saveCode.disabled = false;
+      /* Renaming onto a code that exists is nearly always someone trying to put
+         this device onto the family they already have. Offer that, rather than
+         sending them off to a different form to do it. */
+      if(err && err.codeExists){
+        const msgEl = document.getElementById('cloudStatusMsg');
+        msgEl.style.color = 'var(--ink-soft)';
+        msgEl.innerHTML = `<strong>${escapeHtml(code)}</strong> already exists — that's your other family.
+          <br>Do you want this device to <strong>join</strong> it instead? Everything on this device will be replaced by that family's copy.
+          <br><button class="btn btn-primary" id="joinExistingInstead" style="margin-top:6px; font-size:12px;">Join ${escapeHtml(code)}</button>`;
+        document.getElementById('joinExistingInstead').onclick = async ()=>{
+          const cfg = cloudConfig();
+          try{
+            await cloudSync.connect({ url: cfg.url, key: cfg.key, familyId: code }, { mustExist: true });
+            codeFormOpen = false;
+            renderCloudBlock(true);
+            toast(`Joined — now showing ${state.people.map(p=>p.name).join(', ')}. ✅`, 'success');
+            render();
+          }catch(e){ setMsg((e && e.message) || 'Couldn\'t join.', false); }
+        };
+        return;
+      }
       setMsg((err && err.message) || 'Couldn\'t change the code.', false);
     }
   });
