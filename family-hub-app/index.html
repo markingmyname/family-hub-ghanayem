@@ -2134,9 +2134,10 @@ function renderDayColumns(d){
     return `${h % 12 === 0 ? 12 : h % 12} ${h < 12 ? 'AM' : 'PM'}`;
   };
 
-  /* The family catch-all first, then each person. */
+  /* Always the family first, then each person, so the columns don't shuffle
+     about as you page from a day with shared events to one without. */
   const columns = [
-    ...(visible.some(isFamilyEvent) ? [{ key:'family', label:familyLabel(), dot:'var(--family)', match:isFamilyEvent }] : []),
+    ...(selected.length ? [] : [{ key:'family', label:familyLabel(), dot:'var(--family)', match:isFamilyEvent }]),
     ...people.map(p=>({ key:p.id, label:p.name, avatar:p, match:e=>eventPersonIds(e).includes(p.id) }))
   ];
 
