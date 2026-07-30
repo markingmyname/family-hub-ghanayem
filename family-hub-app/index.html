@@ -1133,6 +1133,26 @@ function newFamilyId(){
   return 'family-' + Math.random().toString(36).slice(2,8) + Math.random().toString(36).slice(2,8);
 }
 
+/* Codes are typed by people, so accept loose input and tidy it: lowercase, no
+   spaces, always prefixed, since that prefix is what makes a pasted code
+   recognisable as one. The 12-character floor matches what the database
+   enforces — the code is the only lock on the family's data. */
+function normalizeFamilyCode(v){
+  let code = String(v||'').trim().toLowerCase().replace(/\s+/g,'-').replace(/[^a-z0-9-]/g,'');
+  code = code.replace(/^(family-)+/,'');
+  code = code.replace(/^-+|-+$/g,'');
+  return code ? 'family-' + code : '';
+}
+function familyCodeProblem(code){
+  if(!code || code === 'family-') return 'Give the family a code, something like family-ghanayem-7k3p.';
+  if(code.length < 12) return `Too short — ${code} needs to be at least 12 characters.`;
+  return '';
+}
+// A code with no digits is the kind a stranger could guess.
+function familyCodeIsGuessable(code){
+  return !/\d/.test(code) || code.length < 18;
+}
+
 /* ---- Reading a pasted key ----
    Supabase has two generations of key. The legacy `anon` key is a JWT whose
    payload names the project, which is handy: paste it and the project URL can
@@ -1343,6 +1363,21 @@ const cloudSync = {
     let remote;
     try{ remote = JSON.parse(row.payload); }
     catch(e){ throw new Error('The copy in the cloud was unreadable, so this device kept its own.'); }
+
+    /* The family may have been given a new code elsewhere. The old row is left
+       holding a forwarding note so every other device follows by itself. */
+    if(remote && remote.__movedTo){
+      const moved = normalizeFamilyCode(remote.__movedTo);
+      const cfg = cloudConfig();
+      if(moved && cfg && moved !== cfg.familyId){
+        writeCloudConfig(Object.assign({}, cfg, { familyId: moved }));
+        this.rev = 0;
+        toast(`This family moved to ${moved} — following it.`, 'success');
+        return await this.pull(true);
+      }
+      return 'current';
+    }
+
     this.applyRemote(remote);
     this.rev = Number(row.rev) || 0;
     this.lastSyncAt = Date.now();
@@ -1453,6 +1488,32 @@ const cloudSync = {
     this.rev = 0;
     this.pendingPush = false;
     this.setStatus('off');
+  },
+
+  /* Moves the whole family to a code of your choosing: write the board under
+     the new code, leave a forwarding note under the old one, then follow it
+     here. Every other device picks up the note on its next check. */
+  async changeFamilyCode(newId){
+    const cfg = cloudConfig();
+    if(!cfg) throw new Error('Family sync isn\'t set up on this device.');
+    if(newId === cfg.familyId) throw new Error('That\'s already this family\'s code.');
+
+    const taken = await this._rpc('family_hub_meta', { fid: newId });
+    if(taken && taken[0]) throw new Error('That code is already in use. Pick another.');
+
+    const stored = await this._rpc('family_hub_put', {
+      fid: newId, body: cloudPayload(), newrev: 1, device: deviceId()
+    });
+    // Only once the board is safely under the new code does the old one become a signpost.
+    await this._rpc('family_hub_put', {
+      fid: cfg.familyId, body: JSON.stringify({ __movedTo: newId }), newrev: 999999, device: deviceId()
+    });
+
+    writeCloudConfig(Object.assign({}, cfg, { familyId: newId }));
+    this.rev = Number(stored) || 1;
+    this.lastSyncAt = Date.now();
+    this.setStatus('live');
+    return newId;
   }
 };
 
@@ -4309,6 +4370,7 @@ grant execute on function family_hub_get(text) to anon, authenticated;
 grant execute on function family_hub_put(text, text, bigint, text) to anon, authenticated;`;
 
 let cloudFormOpen = false;
+let codeFormOpen = false;
 
 function familySyncModal(){
   cloudFormOpen = !cloudSync.isOn();
@@ -4359,9 +4421,24 @@ function renderCloudBlock(){
       <button class="btn btn-primary" id="cloudSyncNow">🔄 Sync now</button>
       <button class="btn btn-ghost" id="cloudInvite">🔗 Copy setup link for another device</button>
       <button class="btn btn-ghost" id="cloudCopyFamily">📋 Copy family code</button>
+      <button class="btn btn-ghost" id="cloudRenameFamily" style="font-size:12px;">${codeFormOpen ? 'Cancel' : '✏️ Change family code'}</button>
       <button class="btn btn-ghost" id="cloudEdit" style="font-size:12px;">${cloudFormOpen ? 'Cancel' : 'Change settings'}</button>
       <button class="btn btn-ghost" id="cloudDisconnect" style="font-size:12px;">Stop syncing</button>
     </div>
+    ${codeFormOpen ? `
+    <div style="border:1px solid var(--line); border-radius:9px; padding:10px 12px; margin:10px 0 0;">
+      <p style="font-size:12.5px; margin:0 0 6px;"><strong>Pick a new family code</strong></p>
+      <p style="font-size:11.5px; color:var(--ink-soft); line-height:1.5; margin:0 0 8px;">
+        The board moves to the new code and the old one is left as a signpost, so your other devices follow within a
+        few seconds — nothing to retype on them.
+      </p>
+      <div class="add-row" style="margin:0;">
+        <input id="newFamilyCode" value="${escapeHtml(cfg.familyId)}" placeholder="family-ghanayem-7k3p">
+        <button class="btn btn-ghost" id="addCodeSuffix" style="font-size:12px;">Add random bit</button>
+      </div>
+      <div id="codeHint" style="font-size:11.5px; margin-top:6px; min-height:15px;"></div>
+      <button class="btn btn-primary" id="saveFamilyCode" style="margin-top:6px;">Move the family to this code</button>
+    </div>` : ''}
     <p style="font-size:11.5px; color:var(--ink-soft); line-height:1.5; margin:8px 0 0;">
       The setup link contains the key — send it to your own devices the way you'd hand over a house key, not in a public post.
     </p>` : '';
@@ -4555,6 +4632,51 @@ function renderCloudBlock(){
 
   const edit = document.getElementById('cloudEdit');
   if(edit) edit.onclick = ()=>{ cloudFormOpen = !cloudFormOpen; renderCloudBlock(); };
+
+  const renameBtn = document.getElementById('cloudRenameFamily');
+  if(renameBtn) renameBtn.onclick = ()=>{ codeFormOpen = !codeFormOpen; renderCloudBlock(); };
+
+  const codeInput = document.getElementById('newFamilyCode');
+  const codeHint = document.getElementById('codeHint');
+  const refreshCodeHint = ()=>{
+    if(!codeInput || !codeHint) return;
+    const code = normalizeFamilyCode(codeInput.value);
+    const problem = familyCodeProblem(code);
+    if(problem){ codeHint.style.color = 'var(--danger)'; codeHint.textContent = problem; return; }
+    if(familyCodeIsGuessable(code)){
+      codeHint.style.color = 'var(--mustard)';
+      codeHint.textContent = `Will become ${code} — guessable, though. This code is the only thing keeping your family's board private.`;
+    }else{
+      codeHint.style.color = 'var(--good)';
+      codeHint.textContent = `Will become ${code}`;
+    }
+  };
+  if(codeInput){ codeInput.oninput = refreshCodeHint; refreshCodeHint(); }
+
+  const addSuffix = document.getElementById('addCodeSuffix');
+  if(addSuffix) addSuffix.onclick = ()=>{
+    codeInput.value = normalizeFamilyCode(codeInput.value) + '-' + Math.random().toString(36).slice(2,7);
+    refreshCodeHint();
+  };
+
+  const saveCode = document.getElementById('saveFamilyCode');
+  if(saveCode) saveCode.onclick = ()=>requireUnlock(async ()=>{
+    const code = normalizeFamilyCode(codeInput.value);
+    const problem = familyCodeProblem(code);
+    if(problem){ setMsg(problem, false); return; }
+    saveCode.disabled = true;
+    setMsg('Moving the family…');
+    try{
+      await cloudSync.changeFamilyCode(code);
+      codeFormOpen = false;
+      renderCloudBlock();
+      setMsg(`Done. Your other devices will follow within about 8 seconds — no retyping needed.`, true);
+      toast(`Family code is now ${code}.`, 'success');
+    }catch(err){
+      saveCode.disabled = false;
+      setMsg((err && err.message) || 'Couldn\'t change the code.', false);
+    }
+  });
 
   const disconnect = document.getElementById('cloudDisconnect');
   if(disconnect) disconnect.onclick = ()=>requireUnlock(()=>{
