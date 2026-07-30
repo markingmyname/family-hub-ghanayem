@@ -1559,10 +1559,18 @@ function cloudAgoLabel(){
    idea of a good time, so one configured device can hand the settings to the
    next one in a link. The link carries a key, so it's shared the way a house key
    is — directly, to people who live there. */
+const PUBLIC_APP_URL = 'https://markingmyname.github.io/family-hub-ghanayem/';
+/* A link built while testing on localhost points every other device at itself,
+   where nothing is listening. Share the published address instead. */
+function appShareUrl(){
+  const isLocal = location.protocol === 'file:' ||
+    /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(location.hostname);
+  return isLocal ? PUBLIC_APP_URL : location.origin + location.pathname;
+}
 function cloudInviteLink(cfg){
   const bytes = new TextEncoder().encode(JSON.stringify(cfg));
   const b64 = btoa(String.fromCharCode(...bytes));
-  return location.origin + location.pathname + '#fh-sync=' + encodeURIComponent(b64);
+  return appShareUrl() + '#fh-sync=' + encodeURIComponent(b64);
 }
 /* Reads an invite out of the address bar and strips it straight away, so the key
    doesn't sit in the URL bar, in history, or in a screenshot. */
