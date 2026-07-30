@@ -4765,9 +4765,9 @@ async function initCloudSync(){
   }
 }
 
-// Events pulled or imported from elsewhere that are filed under one person.
-function assignedSyncedCount(){
-  return state.events.filter(e=>['google','outlook','import'].includes(e.source) && eventPersonIds(e).length).length;
+// Events currently filed under a person rather than the whole family.
+function assignedEventCount(){
+  return state.events.filter(e=>eventPersonIds(e).length).length;
 }
 
 function syncModal(){
@@ -4787,7 +4787,8 @@ function syncModal(){
         Keep it on the family calendar unless a connected account belongs to one person — anything filed under a
         person only shows when you pick them, while family events show under everyone.
       </p>
-      ${assignedSyncedCount() ? `<button class="btn btn-ghost" id="moveSyncedToFamily" style="font-size:12px; margin-top:8px;">Move ${assignedSyncedCount()} synced event${assignedSyncedCount()===1?'':'s'} to ${escapeHtml(familyLabel())}</button>` : ''}
+      ${assignedEventCount() ? `<button class="btn btn-ghost" id="moveSyncedToFamily" style="font-size:12px; margin-top:8px;">Move all ${assignedEventCount()} event${assignedEventCount()===1?'':'s'} to ${escapeHtml(familyLabel())}</button>
+      <p style="font-size:11.5px; color:var(--ink-soft); line-height:1.5; margin:6px 0 0;">Clears every personal calendar in one go — afterwards each person is empty until you assign something to them.</p>` : ''}
     </div>
     <div class="field"><label>Choose an .ics file (exported from any calendar app)</label><input type="file" accept=".ics,text/calendar" id="syncFile"></div>
     <div id="syncResult" style="font-size:13px; min-height:18px; color:var(--good); font-weight:600;"></div>
@@ -4854,11 +4855,11 @@ function syncModal(){
   if(moveBtn) moveBtn.onclick = ()=>requireUnlock(async ()=>{
     let moved = 0;
     state.events.forEach(e=>{
-      if(['google','outlook','import'].includes(e.source) && eventPersonIds(e).length){ e.personIds = []; moved++; }
+      if(eventPersonIds(e).length){ e.personIds = []; moved++; }
     });
     await saveState();
     closeModal(); render();
-    toast(`Moved ${moved} event${moved===1?'':'s'} to ${familyLabel()}.`, 'success');
+    toast(`Moved ${moved} event${moved===1?'':'s'} to ${familyLabel()}. Everyone's own calendar is now empty.`, 'success');
   });
   const clearBtn = document.getElementById('clearImported');
   if(clearBtn) clearBtn.onclick = ()=>requireUnlock(()=>{
