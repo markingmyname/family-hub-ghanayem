@@ -1655,7 +1655,7 @@ function budgetFor(id){ return state.budget.transactions.filter(t=>t.personId===
 
 /* ---- Event ownership ----
    An event carries a list of people. An EMPTY list means it belongs to the whole
-   family — the catch-all calendar — so it shows up no matter who you filter to. */
+   family — the catch-all calendar. */
 function eventPersonIds(e){
   const ids = Array.isArray(e.personIds) ? e.personIds : (e.personId ? [e.personId] : []);
   return ids.filter(id=>personById(id));
@@ -1663,9 +1663,11 @@ function eventPersonIds(e){
 function isFamilyEvent(e){ return eventPersonIds(e).length === 0; }
 function eventPeople(e){ return eventPersonIds(e).map(personById).filter(Boolean); }
 function familyLabel(){ return state.familyLabel || 'Family calendar'; }
+/* The family tab is the whole household; a person's tab is strictly their own
+   diary, so family events stay out of it rather than padding every column. */
 function eventMatchesFilter(e, filter){
   if(filter === 'all') return true;
-  return isFamilyEvent(e) || eventPersonIds(e).includes(filter);
+  return eventPersonIds(e).includes(filter);
 }
 /* One person keeps their own colour; several share the chip as equal bands;
    a family event uses the neutral board colour so it reads as "everyone". */
