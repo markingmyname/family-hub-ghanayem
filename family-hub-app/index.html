@@ -2025,9 +2025,9 @@ function renderWeekGrid(d){
   return `<div class="week-grid">${cols}</div>`;
 }
 
-/* The day view is one grid: hours down the side, a "Whole day" column plus one
-   per person across the top. Building it as a single CSS grid rather than
-   independent columns is what keeps every person's 9am on the same line. */
+/* The day view is one grid: hours down the side, one column per calendar across
+   the top. Building it as a single CSS grid rather than independent columns is
+   what keeps every person's 9am on the same line. */
 function renderDayColumns(d){
   const ds = fmtDate(d);
   const dayEvents = state.events.filter(e=>e.date===ds).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
@@ -2048,9 +2048,8 @@ function renderDayColumns(d){
     return `${h % 12 === 0 ? 12 : h % 12} ${h < 12 ? 'AM' : 'PM'}`;
   };
 
-  /* Column 1 is everything; then the family catch-all; then each person. */
+  /* The family catch-all first, then each person. */
   const columns = [
-    { key:'all', label:'Whole day', dot:'var(--mustard)', match:()=>true },
     ...(visible.some(isFamilyEvent) ? [{ key:'family', label:familyLabel(), dot:'var(--board)', match:isFamilyEvent }] : []),
     ...people.map(p=>({ key:p.id, label:p.name, avatar:p, match:e=>eventPersonIds(e).includes(p.id) }))
   ];
@@ -5297,6 +5296,7 @@ function shiftCal(dir){
 (async function init(){
   try{
     await loadState();
+    state.calFilter = 'all';        // every session opens on the family calendar
     updateLockIndicator();
     buildKeypad();
     render();
