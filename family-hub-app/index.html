@@ -1500,7 +1500,7 @@ const cloudSync = {
     if(newId === cfg.familyId) throw new Error('That\'s already this family\'s code.');
 
     const taken = await this._rpc('family_hub_meta', { fid: newId });
-    if(taken && taken[0]) throw new Error('That code is already in use. Pick another.');
+    if(taken && taken[0]) throw new Error('That code already belongs to a family. To put this device on it, press Cancel, then Change settings, paste the code and press Join this family.');
 
     const stored = await this._rpc('family_hub_put', {
       fid: newId, body: cloudPayload(), newrev: 1, device: deviceId()
@@ -4446,7 +4446,7 @@ function renderCloudBlock(force){
       <button class="btn btn-primary" id="cloudSyncNow">🔄 Sync now</button>
       <button class="btn btn-ghost" id="cloudInvite">🔗 Copy setup link for another device</button>
       <button class="btn btn-ghost" id="cloudCopyFamily">📋 Copy family code</button>
-      <button class="btn btn-ghost" id="cloudRenameFamily" style="font-size:12px;">${codeFormOpen ? 'Cancel' : '✏️ Change family code'}</button>
+      <button class="btn btn-ghost" id="cloudRenameFamily" style="font-size:12px;">✏️ Change family code</button>
       <button class="btn btn-ghost" id="cloudEdit" style="font-size:12px;">${cloudFormOpen ? 'Cancel' : 'Change settings'}</button>
       <button class="btn btn-ghost" id="cloudDisconnect" style="font-size:12px;">Stop syncing</button>
     </div>
@@ -4462,7 +4462,14 @@ function renderCloudBlock(force){
         <button class="btn btn-ghost" id="addCodeSuffix" style="font-size:12px;">+ Random 6</button>
       </div>
       <div id="codeHint" style="font-size:11.5px; margin-top:6px; min-height:15px;"></div>
-      <button class="btn btn-primary" id="saveFamilyCode" style="margin-top:6px;">Move the family to this code</button>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+        <button class="btn btn-primary" id="saveFamilyCode">💾 Save</button>
+        <button class="btn btn-ghost" id="cancelFamilyCode">Cancel</button>
+      </div>
+      <p style="font-size:11.5px; color:var(--ink-soft); line-height:1.5; margin:8px 0 0;">
+        This <strong>renames your own family</strong>. To put this device onto a family that already exists, close this and
+        use <em>Change settings</em> instead — paste the code there and press <em>Join this family</em>.
+      </p>
     </div>` : ''}
     <p style="font-size:11.5px; color:var(--ink-soft); line-height:1.5; margin:8px 0 0;">
       The setup link contains the key — send it to your own devices the way you'd hand over a house key, not in a public post.
@@ -4686,6 +4693,9 @@ function renderCloudBlock(force){
     refreshCodeHint();
     codeInput.focus();
   };
+
+  const cancelCode = document.getElementById('cancelFamilyCode');
+  if(cancelCode) cancelCode.onclick = ()=>{ codeFormOpen = false; renderCloudBlock(true); };
 
   const saveCode = document.getElementById('saveFamilyCode');
   if(saveCode) saveCode.onclick = ()=>requireUnlock(async ()=>{
