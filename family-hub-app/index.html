@@ -21,6 +21,7 @@
 <style>
   :root{
     --board: #2E3A46;
+    --family: #14161A;
     --board-2: #3A4856;
     --paper: #FFFDF7;
     --paper-2: #FBF4E7;
@@ -580,6 +581,7 @@ const EMOJI_OPTIONS = ['😀','😎','🥰','🤓','😺','🐶','🦄','🐼','
 
 let state = null;
 const STORAGE_KEY = 'family-hub-state-v2';
+const PREJOIN_BACKUP_KEY = STORAGE_KEY + '-prejoin-backup';
 
 /* Storage adapter: uses Claude's shared cross-device storage when available
    (window.storage, inside claude.ai artifacts). When self-hosted elsewhere,
@@ -598,10 +600,10 @@ const usingLocalFallback = !(window.storage && typeof window.storage.get === 'fu
 function defaultState(){
   return {
     people: [
-      {id:'p1', name:'Mom', color:'#E2413F', avatarType:'color', avatarEmoji:'', avatarImage:''},
-      {id:'p2', name:'Dad', color:'#3B6FE0', avatarType:'color', avatarEmoji:'', avatarImage:''},
-      {id:'p3', name:'Kid 1', color:'#F2C230', avatarType:'color', avatarEmoji:'', avatarImage:''},
-      {id:'p4', name:'Kid 2', color:'#3FA34D', avatarType:'color', avatarEmoji:'', avatarImage:''}
+      {id:'p1', name:'Mom', color:'#E8609F', avatarType:'color', avatarEmoji:'', avatarImage:''},
+      {id:'p2', name:'Dad', color:'#3FA34D', avatarType:'color', avatarEmoji:'', avatarImage:''},
+      {id:'p3', name:'Kingston', color:'#3B6FE0', avatarType:'color', avatarEmoji:'', avatarImage:''},
+      {id:'p4', name:'Maddox', color:'#E2413F', avatarType:'color', avatarEmoji:'', avatarImage:''}
     ],
     events: [],
     chores: [],
@@ -638,7 +640,7 @@ function defaultState(){
     timeFormat: '12h',
     timeZones: { secondaryEnabled:false, primary:'', secondary:'Europe/London', primaryLabel:'', secondaryLabel:'' },
     sleepAfterMin: 15,
-    familyLabel: 'Family calendar'
+    familyLabel: 'Ghanayem family'
   };
 }
 
@@ -913,7 +915,7 @@ function migrateState(s){
   // '' means the family calendar — the catch-all everyone sees.
   if(s.syncAssignTo === undefined) s.syncAssignTo = '';
   if(s.syncAssignTo && !(s.people||[]).some(p=>p.id === s.syncAssignTo)) s.syncAssignTo = '';
-  if(!s.familyLabel) s.familyLabel = 'Family calendar';
+  if(!s.familyLabel) s.familyLabel = 'Ghanayem family';
   if(!s.outlook) s.outlook = { clientId: '' };
   if(!s.google) s.google = { clientId: '' };
   if(!s.google.calendarId) s.google.calendarId = 'ac3601938b78b11f2849f0a53d25e7047d4c115a510dd7d02464bc8a72b60a85@group.calendar.google.com';
@@ -1425,6 +1427,9 @@ const cloudSync = {
     try{
       const row = await this.fetchRow();
       if(row){
+        /* Joining replaces this device's copy wholesale, so keep the outgoing one
+           — joining the wrong family shouldn't be how you lose the kids' names. */
+        try{ await storageAdapter.set(PREJOIN_BACKUP_KEY, JSON.stringify(state), true); }catch(e){}
         await this.pull(true);
         render();
       }else if(opts && opts.mustExist){
@@ -1597,7 +1602,7 @@ function eventMatchesFilter(e, filter){
    a family event uses the neutral board colour so it reads as "everyone". */
 function eventColor(e){
   const ppl = eventPeople(e);
-  if(!ppl.length) return 'var(--board)';
+  if(!ppl.length) return 'var(--family)';
   if(ppl.length === 1) return ppl[0].color;
   const step = 100 / ppl.length;
   const stops = ppl.map((p,i)=>`${p.color} ${(i*step).toFixed(2)}% ${((i+1)*step).toFixed(2)}%`).join(', ');
@@ -2050,7 +2055,7 @@ function renderDayColumns(d){
 
   /* The family catch-all first, then each person. */
   const columns = [
-    ...(visible.some(isFamilyEvent) ? [{ key:'family', label:familyLabel(), dot:'var(--board)', match:isFamilyEvent }] : []),
+    ...(visible.some(isFamilyEvent) ? [{ key:'family', label:familyLabel(), dot:'var(--family)', match:isFamilyEvent }] : []),
     ...people.map(p=>({ key:p.id, label:p.name, avatar:p, match:e=>eventPersonIds(e).includes(p.id) }))
   ];
 
@@ -2145,7 +2150,7 @@ function eventModal(existing, presetDate){
       <div class="who-picker">
         <label class="who-opt who-family">
           <input type="checkbox" id="whoFamily" ${isFamilyEvent(ev)?'checked':''}>
-          <span class="dot" style="background:var(--board);"></span>
+          <span class="dot" style="background:var(--family);"></span>
           <span>${escapeHtml(familyLabel())} — everyone</span>
         </label>
         ${state.people.map(p=>`
@@ -2974,7 +2979,7 @@ function todoModal(existing, presetListId, parentId){
       <div class="who-picker">
         <label class="who-opt who-family">
           <input type="checkbox" id="tdFamily" ${!(t.personIds||[]).length?'checked':''}>
-          <span class="dot" style="background:var(--board);"></span>
+          <span class="dot" style="background:var(--family);"></span>
           <span>${escapeHtml(familyLabel())} — anyone</span>
         </label>
         ${state.people.map(p=>`
@@ -4325,6 +4330,25 @@ function renderCloudBlock(){
   const cfg = cloudConfig();
   const on = !!cfg;
 
+  /* Joining overwrites this device's copy, so the previous one is kept until
+     the household is happy. Offered here rather than silently discarded. */
+  let backupNames = '';
+  try{
+    const raw = localStorage.getItem(PREJOIN_BACKUP_KEY);
+    if(raw){
+      const prev = JSON.parse(raw);
+      backupNames = (prev.people || []).map(p=>p.name).join(', ');
+    }
+  }catch(e){}
+  const backupBlock = backupNames ? `
+    <div style="border:1px solid var(--line); border-radius:9px; padding:8px 10px; margin:0 0 10px; font-size:11.5px; color:var(--ink-soft); line-height:1.5;">
+      Before joining, this device held: <strong>${escapeHtml(backupNames)}</strong>.
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;">
+        <button class="btn btn-ghost" id="cloudRestoreBackup" style="font-size:11.5px;">↩️ Put that copy back</button>
+        <button class="btn btn-ghost" id="cloudDropBackup" style="font-size:11.5px;">Discard it</button>
+      </div>
+    </div>` : '';
+
   const connectedSummary = on ? `
     <div style="background:rgba(0,0,0,0.04); border-radius:8px; padding:8px 10px; margin:0 0 10px; font-size:12.5px; line-height:1.7;">
       <div>Database: <strong>${escapeHtml(cloudHost(cfg))}</strong></div>
@@ -4396,6 +4420,7 @@ function renderCloudBlock(){
       Status: <strong>${cloudStatusLabel()}</strong>${cloudSync.pendingPush && cloudSync.status !== 'live' ? ' · changes waiting to go up' : ''}
     </p>
     ${cloudSync.detail ? `<p style="font-size:11.5px; color:var(--danger); margin:-4px 0 8px;">${escapeHtml(cloudSync.detail)}</p>` : ''}
+    ${backupBlock}
     ${connectedSummary}
     ${form}
     <div id="cloudStatusMsg" style="font-size:12.5px; margin-top:8px; min-height:16px;"></div>`;
@@ -4407,6 +4432,27 @@ function renderCloudBlock(){
 
   const gen = document.getElementById('cloudGenFamily');
   if(gen) gen.onclick = ()=>{ document.getElementById('cloudFamily').value = newFamilyId(); };
+
+  /* Restoring pushes the old copy up as the family's, so the whole household
+     gets those names back rather than just this screen. */
+  const restore = document.getElementById('cloudRestoreBackup');
+  if(restore) restore.onclick = ()=>requireUnlock(async ()=>{
+    try{
+      const raw = localStorage.getItem(PREJOIN_BACKUP_KEY);
+      if(!raw) return;
+      cloudSync.applyRemote(JSON.parse(raw));
+      localStorage.removeItem(PREJOIN_BACKUP_KEY);
+      await saveState();
+      renderCloudBlock(); render();
+      toast(`Restored: ${state.people.map(p=>p.name).join(', ')}.`, 'success');
+    }catch(e){ setMsg('That backup could not be read.', false); }
+  });
+
+  const dropBackup = document.getElementById('cloudDropBackup');
+  if(dropBackup) dropBackup.onclick = ()=>{
+    try{ localStorage.removeItem(PREJOIN_BACKUP_KEY); }catch(e){}
+    renderCloudBlock();
+  };
 
   const copySql = document.getElementById('cloudCopySql');
   if(copySql) copySql.onclick = async ()=>{
@@ -4465,7 +4511,7 @@ function renderCloudBlock(){
       cloudFormOpen = false;
       renderCloudBlock();
       toast(outcome === 'joined'
-        ? 'Joined the family copy — this device now shows the shared board. ✅'
+        ? `Joined — now showing ${state.people.map(p=>p.name).join(', ')}. ✅`
         : 'Family sync is on. This device\'s data is now the shared copy. ✅', 'success');
       render();
     }catch(err){
