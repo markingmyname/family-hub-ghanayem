@@ -632,6 +632,7 @@ function defaultState(){
     calView: 'month',
     calDate: todayStr(),
     calFilter: 'all',
+    syncAssignTo: '',
     habitMonth: monthStr(new Date()),
     habitPersonId: 'p1',
     timeFormat: '12h',
@@ -909,6 +910,9 @@ function seriesMembers(seriesId){
 function migrateState(s){
   if(!s.budget) s.budget = { transactions: [] };
   if(!s.calFilter) s.calFilter = 'all';
+  // '' means the family calendar — the catch-all everyone sees.
+  if(s.syncAssignTo === undefined) s.syncAssignTo = '';
+  if(s.syncAssignTo && !(s.people||[]).some(p=>p.id === s.syncAssignTo)) s.syncAssignTo = '';
   if(!s.familyLabel) s.familyLabel = 'Family calendar';
   if(!s.outlook) s.outlook = { clientId: '' };
   if(!s.google) s.google = { clientId: '' };
@@ -1817,6 +1821,11 @@ function openModal(html){
 function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
 function peopleOptionsHtml(selectedId){
   return state.people.map(p=>`<option value="${p.id}" ${p.id===selectedId?'selected':''}>${escapeHtml(p.name)}</option>`).join('');
+}
+
+// Same list, plus the family calendar — which is what an empty value means.
+function assignTargetOptionsHtml(selectedId){
+  return `<option value="" ${!selectedId?'selected':''}>🗓️ ${escapeHtml(familyLabel())} — everyone sees it</option>` + peopleOptionsHtml(selectedId);
 }
 
 /* ============================= TAB NAV ============================= */
@@ -4118,10 +4127,11 @@ function googleAuthMessage(code){
 
 /* ---- Live sync: pull in the background so the wall display stays current ---- */
 let googleAutoTimer = null;
+/* Where pulled and imported events land. Background pulls happen with no panel
+   on screen, so this reads the setting rather than a dropdown — otherwise every
+   unattended sync quietly filed the whole family's calendar under one person. */
 function googleSyncPersonId(){
-  const sel = document.getElementById('syncPerson');
-  if(sel && sel.value) return sel.value;
-  return state.people[0] && state.people[0].id;
+  return (state && state.syncAssignTo) || '';
 }
 async function googleAutoPull(){
   if(!googleSync.canRead() && !(state.google && state.google.consented)) return;
@@ -4580,6 +4590,11 @@ async function initCloudSync(){
   }
 }
 
+// Events pulled or imported from elsewhere that are filed under one person.
+function assignedSyncedCount(){
+  return state.events.filter(e=>['google','outlook','import'].includes(e.source) && eventPersonIds(e).length).length;
+}
+
 function syncModal(){
   const guideHtml = Object.entries(SYNC_GUIDES).map(([name,txt])=>
     `<details style="border:1px solid var(--line); border-radius:9px; padding:8px 10px; margin-bottom:6px;">
@@ -4591,7 +4606,14 @@ function syncModal(){
     <p style="font-size:13px; color:var(--ink-soft); margin-top:-6px;">Google, Outlook, Yahoo, and Cozi all speak the <strong>.ics</strong> calendar format — that's the bridge Family Hub uses.</p>
 
     <h4 style="margin:14px 0 6px; font-size:14px;">1. Import a calendar file</h4>
-    <div class="field"><label>Assign imported events to</label><select id="syncPerson">${peopleOptionsHtml(state.people[0]?.id)}</select></div>
+    <div class="field"><label>Where synced and imported events land</label><select id="syncPerson">${assignTargetOptionsHtml(state.syncAssignTo)}</select>
+      <p style="font-size:11.5px; color:var(--ink-soft); line-height:1.5; margin:6px 0 0;">
+        Applies to Google and Outlook sync as well as file imports, and follows every device in the family.
+        Keep it on the family calendar unless a connected account belongs to one person — anything filed under a
+        person only shows when you pick them, while family events show under everyone.
+      </p>
+      ${assignedSyncedCount() ? `<button class="btn btn-ghost" id="moveSyncedToFamily" style="font-size:12px; margin-top:8px;">Move ${assignedSyncedCount()} synced event${assignedSyncedCount()===1?'':'s'} to ${escapeHtml(familyLabel())}</button>` : ''}
+    </div>
     <div class="field"><label>Choose an .ics file (exported from any calendar app)</label><input type="file" accept=".ics,text/calendar" id="syncFile"></div>
     <div id="syncResult" style="font-size:13px; min-height:18px; color:var(--good); font-weight:600;"></div>
     ${importedCount() ? `<button class="btn btn-ghost" id="clearImported" style="font-size:12px; padding:6px 10px;">Remove ${importedCount()} imported event${importedCount()===1?'':'s'}</button>` : ''}
@@ -4643,6 +4665,26 @@ function syncModal(){
   };
   document.getElementById('exportAll').onclick = ()=>exportIcs(null);
   document.querySelectorAll('[data-exportperson]').forEach(b=>b.onclick = ()=>exportIcs(b.dataset.exportperson));
+
+  const assignSel = document.getElementById('syncPerson');
+  if(assignSel) assignSel.onchange = ()=>{
+    state.syncAssignTo = assignSel.value;
+    saveState();
+    toast(state.syncAssignTo
+      ? `Synced events will be filed under ${personById(state.syncAssignTo).name}.`
+      : `Synced events will go to ${familyLabel()}, where everyone sees them.`, 'success');
+  };
+
+  const moveBtn = document.getElementById('moveSyncedToFamily');
+  if(moveBtn) moveBtn.onclick = ()=>requireUnlock(async ()=>{
+    let moved = 0;
+    state.events.forEach(e=>{
+      if(['google','outlook','import'].includes(e.source) && eventPersonIds(e).length){ e.personIds = []; moved++; }
+    });
+    await saveState();
+    closeModal(); render();
+    toast(`Moved ${moved} event${moved===1?'':'s'} to ${familyLabel()}.`, 'success');
+  });
   const clearBtn = document.getElementById('clearImported');
   if(clearBtn) clearBtn.onclick = ()=>requireUnlock(()=>{
     state.events = state.events.filter(e=>e.source!=='import');
@@ -4693,7 +4735,7 @@ function renderOutlookBlock(){
     setStatus('Opening Microsoft sign-in…');
     try{
       await outlookSync.connect();
-      const personId = document.getElementById('syncPerson') ? document.getElementById('syncPerson').value : state.people[0].id;
+      const personId = googleSyncPersonId();
       setStatus('Connected — pulling your events…');
       const res = await outlookSync.pull(personId);
       await saveState();
