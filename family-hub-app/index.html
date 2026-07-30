@@ -1053,6 +1053,7 @@ async function saveLocalOnly(){
    own devices and in the setup links they send each other. */
 const CLOUD_CONFIG_KEY = 'fh-cloud-config';
 const CLOUD_DEVICE_KEY = 'fh-device-id';
+const CLOUD_PROMPTED_KEY = 'fh-cloud-prompted';
 const CLOUD_POLL_MS    = 8000;   // how often a visible tab checks for news
 const CLOUD_PUSH_MS    = 700;    // debounce, so a burst of edits is one write
 
@@ -1114,6 +1115,13 @@ function normalizeCloudUrl(v){
 }
 function cloudHost(cfg){
   try{ return new URL(cfg.url).host; }catch(e){ return cfg.url; }
+}
+
+// Installed to a home screen or dock, rather than running in a browser tab.
+function isStandalone(){
+  try{
+    return window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  }catch(e){ return false; }
 }
 function newFamilyId(){
   return 'family-' + Math.random().toString(36).slice(2,8) + Math.random().toString(36).slice(2,8);
@@ -1183,6 +1191,12 @@ function parseCloudPaste(text){
     else if(!url && /supabase\.(co|in|net)/i.test(clean) && !/^eyJ/.test(clean)) url = normalizeCloudUrl(clean);
   });
   const info = supabaseKeyInfo(key);
+  /* Just the family code on its own pairs with the project this copy already
+     ships with — relaying a short code beats relaying a long link, especially
+     to a phone. */
+  if(!key && !url && parts.length === 1 && /^family-[a-z0-9-]{6,}$/i.test(tidy(parts[0]))){
+    return { url: DEFAULT_CLOUD_URL, key: DEFAULT_CLOUD_KEY, familyId: tidy(parts[0]), kind: 'code' };
+  }
   if(info.kind === 'secret')
     return { error: 'That\u2019s a secret key — it bypasses every access rule, and this app is a public web page. Use the publishable (or anon) key instead.' };
   if(key && info.kind === 'unknown')
@@ -1395,8 +1409,10 @@ const cloudSync = {
 
   /* Points this device at a family row. If the row already holds a copy, that
      copy wins and this device adopts it; if not, this device's data seeds it.
-     Returns 'joined' or 'seeded'. */
-  async connect(cfg){
+     `mustExist` is set when the person supplied a code or link — they meant to
+     JOIN, so an empty result is a typo, not an invitation to start a rival
+     family with the same data. Returns 'joined' or 'seeded'. */
+  async connect(cfg, opts){
     this.stop();
     writeCloudConfig(cfg);
     this.rev = 0;
@@ -1407,6 +1423,8 @@ const cloudSync = {
       if(row){
         await this.pull(true);
         render();
+      }else if(opts && opts.mustExist){
+        throw new Error('No family found with that code — check it for typos. Nothing was created.');
       }else{
         await this.push();
         if(this.status !== 'live') throw new Error(this.detail || 'Couldn\'t write to the cloud database.');
@@ -4307,6 +4325,7 @@ function renderCloudBlock(){
     <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
       <button class="btn btn-primary" id="cloudSyncNow">🔄 Sync now</button>
       <button class="btn btn-ghost" id="cloudInvite">🔗 Copy setup link for another device</button>
+      <button class="btn btn-ghost" id="cloudCopyFamily">📋 Copy family code</button>
       <button class="btn btn-ghost" id="cloudEdit" style="font-size:12px;">${cloudFormOpen ? 'Cancel' : 'Change settings'}</button>
       <button class="btn btn-ghost" id="cloudDisconnect" style="font-size:12px;">Stop syncing</button>
     </div>
@@ -4331,11 +4350,11 @@ function renderCloudBlock(){
           </details>
         </li>
         <li style="margin-bottom:12px;">
-          <strong style="color:var(--ink);">Adding another device?</strong> Paste the <strong>setup link</strong> from a phone or
-          computer that's already syncing — press <em>Copy setup link</em> over there. That link is what carries the family
-          across; without it, this device starts a brand new empty family of its own.
+          <strong style="color:var(--ink);">Adding another device?</strong> Paste the <strong>setup link</strong> or the
+          <strong>family code</strong> from a device that's already syncing — both are on its sync panel. That's what carries
+          the family across; without it, this device starts a brand new empty family of its own.
           <br>Setting the household up for the very first time? Leave the details below exactly as they are and press Connect.
-          <textarea id="cloudPaste" rows="3" placeholder="Paste a setup link — or a project URL and key"
+          <textarea id="cloudPaste" rows="3" placeholder="Paste a setup link, or a family code like family-a1b2c3d4e5f6"
             style="width:100%; box-sizing:border-box; margin-top:6px; font-size:12px; font-family:inherit; padding:8px; border:1px solid var(--line); border-radius:8px; resize:vertical;">${escapeHtml(cfg ? cfg.url + '\n' + cfg.key : DEFAULT_CLOUD_URL + '\n' + DEFAULT_CLOUD_KEY)}</textarea>
           <div id="cloudPasteHint" style="font-size:11.5px; margin-top:4px; min-height:15px;"></div>
         </li>
@@ -4411,7 +4430,7 @@ function renderCloudBlock(){
       connect.textContent = on ? 'Save and reconnect' : 'Connect';
     }else if(parsed.familyId){
       hint.style.color = 'var(--good)';
-      hint.textContent = `Setup link recognised — this device will join family ${parsed.familyId}.`;
+      hint.textContent = `${parsed.kind === 'code' ? 'Family code' : 'Setup link'} recognised — this device will join family ${parsed.familyId}.`;
       connect.textContent = 'Join this family';
     }else{
       hint.style.color = 'var(--ink-soft)';
@@ -4433,7 +4452,7 @@ function renderCloudBlock(){
     connect.disabled = true;
     setMsg('Connecting…');
     try{
-      const outcome = await cloudSync.connect({ url: parsed.url, key: parsed.key, familyId });
+      const outcome = await cloudSync.connect({ url: parsed.url, key: parsed.key, familyId }, { mustExist: !!parsed.familyId });
       cloudFormOpen = false;
       renderCloudBlock();
       toast(outcome === 'joined'
@@ -4471,6 +4490,14 @@ function renderCloudBlock(){
     }catch(e){ setMsg('Copy failed — this browser blocked clipboard access.', false); }
   };
 
+  const copyFamily = document.getElementById('cloudCopyFamily');
+  if(copyFamily) copyFamily.onclick = async ()=>{
+    try{
+      await navigator.clipboard.writeText(cfg.familyId);
+      setMsg('Family code copied. Paste it into the sync panel on the other device and press Join.', true);
+    }catch(e){ setMsg(`Copy failed — the code is ${cfg.familyId}`, false); }
+  };
+
   const edit = document.getElementById('cloudEdit');
   if(edit) edit.onclick = ()=>{ cloudFormOpen = !cloudFormOpen; renderCloudBlock(); };
 
@@ -4504,7 +4531,7 @@ function cloudInviteModal(cfg){
   document.getElementById('inviteYes').onclick = async (e)=>{
     e.target.disabled = true;
     try{
-      await cloudSync.connect(cfg);
+      await cloudSync.connect(cfg, { mustExist: true });
       closeModal();
       render();
       toast('Joined family sync. This device is now in step with the others. ✅', 'success');
@@ -4537,7 +4564,20 @@ async function initCloudSync(){
   }
 
   const invite = takeInviteFromHash();
-  if(invite) cloudInviteModal(invite);
+  if(invite){ cloudInviteModal(invite); return; }
+
+  /* An iOS home-screen install gets its own empty storage, so it arrives here
+     looking like a factory-fresh device — placeholder names and all. Say so on
+     first launch instead of letting it look like sync is simply broken. */
+  if(!cloudSync.isOn() && isStandalone()){
+    let prompted = null;
+    try{ prompted = localStorage.getItem(CLOUD_PROMPTED_KEY); }catch(e){}
+    if(!prompted){
+      try{ localStorage.setItem(CLOUD_PROMPTED_KEY, '1'); }catch(e){}
+      familySyncModal();
+      toast('This install starts fresh — join your family to see everyone\'s data.', 'error');
+    }
+  }
 }
 
 function syncModal(){
