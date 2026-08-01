@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://accounts.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://graph.microsoft.com https://login.microsoftonline.com https://login.live.com https://cdn.jsdelivr.net https://accounts.google.com https://www.googleapis.com https://oauth2.googleapis.com https://*.supabase.co; frame-src https://login.microsoftonline.com https://login.live.com https://accounts.google.com; base-uri 'self'; form-action 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://accounts.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://graph.microsoft.com https://login.microsoftonline.com https://login.live.com https://cdn.jsdelivr.net https://accounts.google.com https://www.googleapis.com https://oauth2.googleapis.com https://*.supabase.co https://api.open-meteo.com https://geocoding-api.open-meteo.com https://api.openai.com https://generativelanguage.googleapis.com; frame-src https://login.microsoftonline.com https://login.live.com https://accounts.google.com; base-uri 'self'; form-action 'self'">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <title>Family Hub</title>
 <meta name="theme-color" content="#2E3A46">
@@ -484,11 +484,149 @@
   .emoji-opt{font-size:20px; background:#fff; border:1px solid var(--line); border-radius:8px; padding:6px 0; cursor:pointer;}
   .emoji-opt.selected{border-color:var(--board); background:var(--paper-2);}
 
+  /* ---------- Dashboard ---------- */
+  .dash-grid{display:grid; gap:12px; grid-template-columns:repeat(auto-fit, minmax(280px,1fr)); align-items:start;}
+  .dash-hero{
+    grid-column:1/-1; display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;
+    background:linear-gradient(135deg, var(--board), var(--board-2)); color:#fff;
+    border-radius:var(--radius); padding:18px 20px; box-shadow:var(--shadow);
+  }
+  .dash-hello{font-family:'Baloo 2'; font-size:27px; font-weight:800; line-height:1.15;}
+  .dash-sub{font-size:13.5px; opacity:0.8; margin-top:2px;}
+  .dash-clock{font-family:'JetBrains Mono'; font-size:34px; font-weight:700; line-height:1;}
+  .wx{display:flex; align-items:center; gap:12px;}
+  .wx-icon{font-size:38px; line-height:1;}
+  .wx-temp{font-family:'JetBrains Mono'; font-size:28px; font-weight:700; line-height:1;}
+  .wx-desc{font-size:12.5px; opacity:0.85;}
+  .wx-hilo{font-size:12px; opacity:0.7; font-family:'JetBrains Mono';}
+  .wx-set{background:rgba(255,255,255,0.12); border:1px solid rgba(255,255,255,0.22); color:#fff; border-radius:9px; padding:7px 12px; font-size:12.5px; font-weight:600; cursor:pointer;}
+  .wx-days{display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;}
+  .wx-day{text-align:center; font-size:11.5px; min-width:52px;}
+  .wx-day .d{font-weight:700; color:var(--ink-soft); text-transform:uppercase; font-size:10px;}
+  .wx-day .i{font-size:20px; line-height:1.3;}
+  .wx-day .t{font-family:'JetBrains Mono'; font-size:11px;}
+  .dash-card{background:var(--paper); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); padding:14px 16px; min-width:0;}
+  .dash-card h3{margin:0 0 10px; font-size:16px; display:flex; align-items:center; justify-content:space-between; gap:8px;}
+  .dash-card h3 .more{font-family:'Inter'; font-size:12px; font-weight:600; color:var(--ink-soft); background:transparent; border:none; cursor:pointer;}
+  .dash-line{display:flex; align-items:center; gap:9px; padding:6px 0; font-size:13.5px; min-width:0;}
+  .dash-line + .dash-line{border-top:1px solid var(--line);}
+  .dash-line .t{font-family:'JetBrains Mono'; font-size:11.5px; color:var(--ink-soft); white-space:nowrap;}
+  .dash-line .n{flex:1; min-width:0; overflow-wrap:anywhere;}
+  .dash-dot{width:9px; height:9px; border-radius:50%; flex-shrink:0;}
+  .dash-none{font-size:13px; color:var(--ink-soft); padding:6px 0;}
+  .dash-meal{font-family:'Baloo 2'; font-size:20px; font-weight:700;}
+  .dash-chips{display:flex; gap:8px; flex-wrap:wrap;}
+  .dash-chip{display:flex; align-items:center; gap:7px; background:var(--paper-2); border:1px solid var(--line); border-radius:999px; padding:5px 12px 5px 6px; font-size:13px;}
+  .dash-chip .pts{font-family:'JetBrains Mono'; font-weight:700;}
+
+  /* ---------- Groceries (Reminders-style) ---------- */
+  .groc-head{display:flex; align-items:flex-end; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:10px;}
+  .groc-title{font-family:'Baloo 2'; font-size:30px; font-weight:800; line-height:1.1; margin:0; color:#3FA34D;}
+  .groc-sub{font-size:13px; color:var(--ink-soft); margin:2px 0 0;}
+  .groc-tools{display:flex; gap:6px; flex-wrap:wrap;}
+  .groc-sec{margin-top:10px;}
+  .groc-sec-head{
+    display:flex; align-items:center; gap:8px; font-weight:700; font-size:13px;
+    color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.03em; padding:12px 2px 4px; cursor:pointer;
+  }
+  .groc-sec-head .cnt{margin-left:auto; font-family:'JetBrains Mono'; font-size:11px; text-transform:none;}
+  .groc-row{display:flex; align-items:flex-start; gap:12px; padding:9px 2px;}
+  .groc-row + .groc-row{border-top:1px solid var(--line);}
+  .groc-row.is-done .groc-name{text-decoration:line-through; color:var(--ink-soft);}
+  .groc-main{flex:1; min-width:0;}
+  .groc-name{font-size:15px; overflow-wrap:anywhere;}
+  .groc-note{font-size:13px; color:var(--ink-soft); margin-top:1px; overflow-wrap:anywhere;}
+  .groc-qty{font-family:'JetBrains Mono'; font-size:12px; color:var(--ink-soft); white-space:nowrap; padding-top:3px;}
+  .groc-row .todo-actions{padding-top:1px;}
+  /* The always-there "New Item" line at the foot of the list, as in Reminders. */
+  .groc-new{display:flex; align-items:center; gap:12px; padding:11px 2px 2px; border-top:1px solid var(--line); margin-top:2px;}
+  .groc-new .ring{width:22px; height:22px; border-radius:50%; border:1.5px dashed #c3bcae; flex-shrink:0;}
+  .groc-new input{border:none; padding:0; font-size:15px; background:transparent;}
+  .groc-new input:focus{outline:none;}
+  .groc-qty-in{max-width:76px; text-align:right; border:none; background:transparent; font-family:'JetBrains Mono'; font-size:12.5px;}
+  .groc-qty-in:focus{outline:none;}
+
+  /* ---------- Smart import review ---------- */
+  .si-drop{
+    border:2px dashed var(--line); border-radius:12px; padding:18px; text-align:center;
+    background:var(--paper-2); cursor:pointer; font-size:13.5px; color:var(--ink-soft);
+  }
+  .si-preview{max-width:100%; max-height:190px; border-radius:10px; margin-top:10px; display:block;}
+  .si-list{max-height:44vh; overflow:auto; margin-top:6px;}
+  .si-row{display:flex; align-items:flex-start; gap:10px; padding:9px 2px; border-bottom:1px solid var(--line); font-size:13.5px;}
+  .si-row input[type=checkbox]{width:18px; height:18px; margin-top:2px; flex-shrink:0;}
+  .si-row .si-when{font-family:'JetBrains Mono'; font-size:11.5px; color:var(--ink-soft);}
+  .si-key-note{font-size:12px; color:var(--ink-soft); line-height:1.45;}
+  .si-spin{display:flex; align-items:center; gap:10px; font-size:13.5px; color:var(--ink-soft); padding:10px 0;}
+
+  /* ---------- Photo library (settings) ---------- */
+  .photo-grid{display:flex; gap:8px; flex-wrap:wrap; margin:8px 0;}
+  .photo-chip{position:relative; width:78px; height:78px; border-radius:9px; overflow:hidden; border:1px solid var(--line); background:var(--paper-2);}
+  .photo-chip img{width:100%; height:100%; object-fit:cover; display:block;}
+  .photo-chip button{position:absolute; top:2px; right:2px; background:rgba(0,0,0,0.6); color:#fff; border:none; border-radius:50%; width:19px; height:19px; font-size:11px; cursor:pointer; line-height:1; padding:0;}
+
+  /* ---------- Housekeeping (Tody-style dueness meters) ---------- */
+  .hk-top{display:flex; align-items:flex-end; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:6px;}
+  .hk-title{font-family:'Baloo 2'; font-size:28px; font-weight:800; margin:0; line-height:1.1;}
+  .hk-sub{font-size:13px; color:var(--ink-soft); margin:2px 0 0;}
+  .hk-who{display:flex; align-items:center; gap:7px; flex-wrap:wrap; font-size:12.5px; color:var(--ink-soft); margin:10px 0 4px;}
+  .hk-who button{
+    display:flex; align-items:center; gap:6px; background:#fff; border:1.5px solid var(--line);
+    border-radius:999px; padding:4px 11px 4px 5px; font-size:13px; cursor:pointer; color:var(--ink);
+  }
+  .hk-who button.active{border-color:var(--board); background:var(--paper-2); font-weight:600;}
+  .hk-area-grid{display:grid; gap:10px; grid-template-columns:repeat(auto-fill, minmax(215px,1fr)); margin-top:6px;}
+  .hk-area{
+    background:#fff; border:1px solid var(--line); border-radius:12px; padding:12px 13px;
+    cursor:pointer; min-width:0; display:flex; flex-direction:column; gap:8px;
+  }
+  .hk-area:active{transform:scale(0.99);}
+  .hk-area.is-open{border-color:var(--board); box-shadow:var(--shadow);}
+  .hk-area-top{display:flex; align-items:center; gap:9px; min-width:0;}
+  .hk-icon{font-size:22px; line-height:1;}
+  .hk-area-name{font-family:'Baloo 2'; font-size:17px; font-weight:700; flex:1; min-width:0; overflow-wrap:anywhere;}
+  .hk-pill{font-size:11px; font-weight:800; padding:3px 9px; border-radius:999px; white-space:nowrap; color:#fff;}
+  .hk-area-meta{font-size:11.5px; color:var(--ink-soft); font-family:'JetBrains Mono';}
+  /* The meter is the whole point: how dirty a thing has become since last time. */
+  .hk-bar{height:9px; border-radius:999px; background:var(--paper-2); overflow:hidden; border:1px solid var(--line);}
+  .hk-bar span{display:block; height:100%; border-radius:999px; transition:width .3s;}
+  .hk-bar.sm{height:6px;}
+  .hk-list{margin-top:4px;}
+  .hk-task{display:flex; align-items:flex-start; gap:11px; padding:10px 2px;}
+  .hk-task + .hk-task{border-top:1px solid var(--line);}
+  .hk-do{
+    width:30px; height:30px; border-radius:50%; border:1.5px solid #c3bcae; background:#fff;
+    cursor:pointer; flex-shrink:0; font-size:14px; color:#b8b1a3; padding:0;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .hk-do:hover{border-color:var(--good); color:var(--good);}
+  .hk-task-main{flex:1; min-width:0;}
+  .hk-task-name{font-size:15px; font-weight:600; overflow-wrap:anywhere;}
+  .hk-task-meta{font-size:11.5px; color:var(--ink-soft); margin-top:3px; display:flex; gap:8px; flex-wrap:wrap;}
+  .hk-task-meta .mono{font-family:'JetBrains Mono';}
+  .hk-eff{
+    font-family:'JetBrains Mono'; font-size:11px; font-weight:700; color:var(--ink-soft);
+    border:1px solid var(--line); border-radius:7px; padding:2px 7px; white-space:nowrap; margin-top:2px;
+  }
+  .hk-area-head{
+    display:flex; align-items:center; gap:10px; margin:16px 0 2px; padding-bottom:6px;
+    border-bottom:2px solid var(--line);
+  }
+  .hk-area-head .hk-area-name{font-size:19px;}
+  .hk-legend{display:flex; gap:12px; flex-wrap:wrap; font-size:11.5px; color:var(--ink-soft); margin-top:14px;}
+  .hk-legend span{display:flex; align-items:center; gap:5px;}
+  .hk-legend i{width:10px; height:10px; border-radius:3px; display:inline-block;}
+
   /* ---------- Screensaver ---------- */
-  #screensaver{position:fixed; inset:0; background:var(--board); z-index:500; display:none; flex-direction:column; align-items:center; justify-content:center; color:#fff; cursor:pointer;}
+  #screensaver{position:fixed; inset:0; background:var(--board); z-index:500; display:none; flex-direction:column; align-items:center; justify-content:center; color:#fff; cursor:pointer; overflow:hidden;}
+  #screensaver .ss-photo{position:absolute; inset:0; background-size:cover; background-position:center; opacity:0; transition:opacity 1.4s ease;}
+  #screensaver .ss-photo.on{opacity:1;}
+  #screensaver .ss-scrim{position:absolute; inset:0; background:linear-gradient(180deg, rgba(0,0,0,0.45), rgba(0,0,0,0.15) 40%, rgba(0,0,0,0.6)); display:none;}
+  #screensaver .ss-body{position:relative; z-index:2; display:flex; flex-direction:column; align-items:center; text-shadow:0 2px 14px rgba(0,0,0,0.5);}
   #screensaver .clock{font-family:'JetBrains Mono'; font-size:64px; font-weight:700;}
   #screensaver .date{font-family:'Baloo 2'; font-size:22px; opacity:0.85; margin-top:6px;}
-  #screensaver .hint{position:absolute; bottom:30px; font-size:13px; opacity:0.5;}
+  #screensaver .ss-weather{font-size:16px; opacity:0.9; margin-top:8px; font-family:'Baloo 2';}
+  #screensaver .hint{position:absolute; bottom:30px; font-size:13px; opacity:0.5; z-index:2;}
   #screensaver .up-next{margin-top:26px; display:flex; gap:10px; flex-wrap:wrap; justify-content:center; max-width:80%;}
 
   /* ---------- Lock screen ---------- */
@@ -524,8 +662,10 @@
     </div>
   </div>
   <nav class="tabs" id="tabNav">
-    <button data-tab="calendar" class="active">📅 Calendar</button>
+    <button data-tab="dashboard" class="active">🏠 Home</button>
+    <button data-tab="calendar">📅 Calendar</button>
     <button data-tab="chores">✅ Chores</button>
+    <button data-tab="housekeeping">🧹 Housekeeping</button>
     <button data-tab="todos">📝 To-Dos</button>
     <button data-tab="habits">🌱 Habits</button>
     <button data-tab="rewards">⭐ Rewards</button>
@@ -540,9 +680,16 @@
 <div id="modalRoot"></div>
 
 <div id="screensaver">
-  <div class="clock" id="ssClock">--:--</div>
-  <div class="date" id="ssDate">Loading...</div>
-  <div class="up-next" id="ssUpNext"></div>
+  <!-- Two stacked layers so one photo can fade into the next. -->
+  <div class="ss-photo" id="ssPhotoA"></div>
+  <div class="ss-photo" id="ssPhotoB"></div>
+  <div class="ss-scrim" id="ssScrim"></div>
+  <div class="ss-body" id="ssBody">
+    <div class="clock" id="ssClock">--:--</div>
+    <div class="date" id="ssDate">Loading...</div>
+    <div class="ss-weather" id="ssWeather"></div>
+    <div class="up-next" id="ssUpNext"></div>
+  </div>
   <div class="hint">Tap anywhere to wake up</div>
 </div>
 
@@ -615,6 +762,7 @@ function defaultState(){
     points: {},
     budget: { transactions: [] },
     meals: { plan:{}, recipes:[], pantry:[], grocery:[] },
+    housekeeping: defaultHousekeeping(),
     habits: { items: [], log: {} },
     todos: {
       lists: [
@@ -626,7 +774,7 @@ function defaultState(){
       items: []
     },
     todoView: { listId:'all', sort:'manual', showCompleted:false, collapsed:{} },
-    completedOpen: { chores:false, todos:false, habits:false },
+    completedOpen: { chores:false, todos:false, habits:false, grocery:false },
     autoRemoveChecked: false,
     outlook: { clientId: '' },
     google: { clientId: '640349356853-ljl8ljpfpktegj49f9f4kr1kkb6fngv2.apps.googleusercontent.com', calendarId: 'ac3601938b78b11f2849f0a53d25e7047d4c115a510dd7d02464bc8a72b60a85@group.calendar.google.com', apiKey: '', consented: false },
@@ -640,6 +788,8 @@ function defaultState(){
     timeFormat: '12h',
     timeZones: { secondaryEnabled:false, primary:'', secondary:'Europe/London', primaryLabel:'', secondaryLabel:'' },
     sleepAfterMin: 15,
+    weather: { lat:null, lon:null, label:'', unit:'F' },
+    screensaver: { photos:true, seconds:15, showClock:true },
     familyLabel: 'Ghanayem family'
   };
 }
@@ -956,7 +1106,20 @@ function migrateState(s){
   });
   if(!s.todoView) s.todoView = { listId:'all', sort:'manual', showCompleted:false, collapsed:{} };
   if(!s.todoView.collapsed) s.todoView.collapsed = {};
-  if(!s.completedOpen) s.completedOpen = { chores:false, todos:false, habits:false };
+  if(!s.completedOpen) s.completedOpen = { chores:false, todos:false, habits:false, grocery:false };
+  if(s.completedOpen.grocery === undefined) s.completedOpen.grocery = false;
+  /* Existing households get the standard cleaning plan the first time they
+     land on a build that has Housekeeping in it. */
+  if(!s.housekeeping || !Array.isArray(s.housekeeping.areas) || !s.housekeeping.areas.length) s.housekeeping = defaultHousekeeping();
+  if(!Array.isArray(s.housekeeping.tasks)) s.housekeeping.tasks = [];
+  if(!Array.isArray(s.housekeeping.log)) s.housekeeping.log = [];
+  s.housekeeping.tasks.forEach(t=>{
+    if(typeof t.freqDays !== 'number' || t.freqDays < 1) t.freqDays = 7;
+    if(typeof t.effort !== 'number') t.effort = 2;
+    if(t.lastDone === undefined) t.lastDone = null;
+    if(t.personId === undefined) t.personId = '';
+    if(typeof t.paused !== 'boolean') t.paused = false;
+  });
   if(typeof s.autoRemoveChecked !== 'boolean') s.autoRemoveChecked = false;
   if(!s.habitMonth) s.habitMonth = monthStr(new Date());
   if(!s.habitPersonId) s.habitPersonId = (s.people && s.people[0] && s.people[0].id) || 'p1';
@@ -968,6 +1131,23 @@ function migrateState(s){
   if(s.timeZones.primaryLabel === undefined) s.timeZones.primaryLabel = '';
   if(s.timeZones.secondaryLabel === undefined) s.timeZones.secondaryLabel = '';
   if(typeof s.sleepAfterMin !== 'number' || ![5,10,15,30,60,0].includes(s.sleepAfterMin)) s.sleepAfterMin = 15;
+  if(!s.weather) s.weather = { lat:null, lon:null, label:'', unit:'F' };
+  if(s.weather.unit !== 'C') s.weather.unit = 'F';
+  if(!s.screensaver) s.screensaver = { photos:true, seconds:15, showClock:true };
+  if(typeof s.screensaver.seconds !== 'number') s.screensaver.seconds = 15;
+  if(typeof s.screensaver.photos !== 'boolean') s.screensaver.photos = true;
+  if(typeof s.screensaver.showClock !== 'boolean') s.screensaver.showClock = true;
+  /* Grocery items grew a category, quantity and note once the list started
+     looking like Reminders. Older rows only had a name and a checkbox. */
+  if(!s.meals) s.meals = { plan:{}, recipes:[], pantry:[], grocery:[] };
+  if(!Array.isArray(s.meals.grocery)) s.meals.grocery = [];
+  s.meals.grocery.forEach((g,i)=>{
+    if(!g.cat) g.cat = guessGroceryCat(g.name);
+    if(g.qty === undefined) g.qty = '';
+    if(g.note === undefined) g.note = '';
+    if(typeof g.order !== 'number') g.order = i;
+    if(g.done === undefined) g.done = false;
+  });
   /* Events moved from a single personId to a personIds list. An empty list means
      the event belongs to the whole family (the catch-all calendar). */
   (s.events||[]).forEach(e=>{
@@ -1811,6 +1991,547 @@ document.getElementById('cancelUnlock').addEventListener('click', ()=>{
   unlockCallback=null;
 });
 
+/* ============================= IMAGES =============================
+   One downscaler shared by the photo library and Smart import. Nothing
+   full-size is ever kept: browser storage is small, and a vision model bills
+   by pixels. */
+function downscaleToDataUrl(file, maxDim, quality){
+  return new Promise((resolve, reject)=>{
+    if(!file || !file.type || !file.type.startsWith('image/')) return reject(new Error('That file isn\'t an image.'));
+    const reader = new FileReader();
+    reader.onerror = ()=>reject(new Error('Could not read that file.'));
+    reader.onload = ev=>{
+      const img = new Image();
+      img.onerror = ()=>reject(new Error('That image could not be loaded.'));
+      img.onload = ()=>{
+        try{
+          const scale = Math.min(1, maxDim/Math.max(img.width, img.height));
+          const w = Math.max(1, Math.round(img.width*scale)), h = Math.max(1, Math.round(img.height*scale));
+          const canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h;
+          canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+          const out = canvas.toDataURL('image/jpeg', quality);
+          if(!out.startsWith('data:image/')) throw new Error('bad image data');
+          resolve(out);
+        }catch(err){ reject(new Error('Could not process that image.')); }
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/* ============================= WEATHER =============================
+   Open-Meteo needs no key and no account, and sends CORS headers, so a static
+   page can call it directly. The answer is cached on the device for half an
+   hour — a screen that lives on a wall shouldn't re-ask every render. */
+const WX_CACHE_KEY = 'fh-weather-cache';
+const WX_TTL_MS = 30*60*1000;
+let wxData = null;
+let wxPending = null;
+
+/* WMO weather codes, collapsed to the handful of buckets worth drawing. */
+const WX_CODES = [
+  [[0],        '☀️', 'Clear'],
+  [[1,2],      '🌤️', 'Mostly sunny'],
+  [[3],        '☁️', 'Cloudy'],
+  [[45,48],    '🌫️', 'Fog'],
+  [[51,53,55,56,57], '🌦️', 'Drizzle'],
+  [[61,63,65,80,81,82], '🌧️', 'Rain'],
+  [[66,67],    '🌧️', 'Freezing rain'],
+  [[71,73,75,77,85,86], '❄️', 'Snow'],
+  [[95,96,99], '⛈️', 'Thunderstorms']
+];
+function wxInfo(code){
+  const hit = WX_CODES.find(([codes])=>codes.includes(code));
+  return { icon: hit? hit[1] : '🌡️', label: hit? hit[2] : 'Weather' };
+}
+function wxUnit(){ return (state.weather && state.weather.unit === 'C') ? 'C' : 'F'; }
+function wxDeg(v){ return (v===null || v===undefined || isNaN(v)) ? '--°' : Math.round(v)+'°'; }
+function wxConfigured(){ return !!(state.weather && state.weather.lat !== null && state.weather.lon !== null); }
+
+function wxReadCache(){
+  try{
+    const raw = localStorage.getItem(WX_CACHE_KEY);
+    if(!raw) return null;
+    const c = JSON.parse(raw);
+    if(!c || !c.at || (Date.now() - c.at) > WX_TTL_MS) return null;
+    if(c.lat !== state.weather.lat || c.lon !== state.weather.lon || c.unit !== wxUnit()) return null;
+    return c.data;
+  }catch(e){ return null; }
+}
+function wxWriteCache(data){
+  try{
+    localStorage.setItem(WX_CACHE_KEY, JSON.stringify({at:Date.now(), lat:state.weather.lat, lon:state.weather.lon, unit:wxUnit(), data}));
+  }catch(e){ /* private mode — the in-memory copy still works for this session */ }
+}
+
+/* Turns a typed place name into coordinates. Nothing is stored but the numbers
+   and the label, so the location never leaves the household's own devices. */
+async function wxGeocode(query){
+  const url = 'https://geocoding-api.open-meteo.com/v1/search?count=1&language=en&format=json&name=' + encodeURIComponent(query);
+  const res = await fetch(url);
+  if(!res.ok) throw new Error('Could not look up that place right now.');
+  const json = await res.json();
+  const hit = json && json.results && json.results[0];
+  if(!hit) throw new Error(`No place called "${query}" was found.`);
+  const parts = [hit.name, hit.admin1, hit.country_code].filter(Boolean);
+  return { lat: hit.latitude, lon: hit.longitude, label: parts.join(', ') };
+}
+
+async function loadWeather(force){
+  if(!wxConfigured()) return null;
+  if(!force){
+    const cached = wxReadCache();
+    if(cached){ wxData = cached; return cached; }
+    if(wxData && wxData._at && (Date.now() - wxData._at) < WX_TTL_MS) return wxData;
+  }
+  if(wxPending) return wxPending;
+  const unit = wxUnit() === 'C' ? 'celsius' : 'fahrenheit';
+  const url = 'https://api.open-meteo.com/v1/forecast'
+    + `?latitude=${encodeURIComponent(state.weather.lat)}&longitude=${encodeURIComponent(state.weather.lon)}`
+    + '&current=temperature_2m,weather_code,apparent_temperature'
+    + '&daily=weather_code,temperature_2m_max,temperature_2m_min'
+    + `&temperature_unit=${unit}&timezone=auto&forecast_days=5`;
+  wxPending = (async ()=>{
+    try{
+      const res = await fetch(url);
+      if(!res.ok) throw new Error('Weather service said no (' + res.status + ').');
+      const json = await res.json();
+      json._at = Date.now();
+      wxData = json;
+      wxWriteCache(json);
+      return json;
+    }finally{ wxPending = null; }
+  })();
+  return wxPending;
+}
+
+/* Kicks a refresh and repaints whatever is on screen when it lands. Failures
+   are quiet on purpose: a missing forecast must never take the board down. */
+function refreshWeather(force){
+  if(!wxConfigured()) return;
+  loadWeather(force).then(()=>{
+    if(activeTab === 'dashboard') render();
+    const ss = document.getElementById('screensaver');
+    if(ss && ss.style.display === 'flex') paintScreensaverWeather();
+  }).catch(err=>console.warn('Weather unavailable:', err.message));
+}
+
+function weatherModal(){
+  const w = state.weather;
+  openModal(`
+    <h3>Weather</h3>
+    <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">Type a town, city or ZIP code. Forecasts come from Open-Meteo — no account, no key, and the location stays on your own devices.</p>
+    <div class="field"><label>Place</label><input id="wxQuery" placeholder="Redmond, WA" value="${escapeHtml(w.label||'')}"></div>
+    <div class="field"><label>Units</label>
+      <select id="wxUnitSel">
+        <option value="F" ${wxUnit()==='F'?'selected':''}>Fahrenheit (°F)</option>
+        <option value="C" ${wxUnit()==='C'?'selected':''}>Celsius (°C)</option>
+      </select>
+    </div>
+    <button class="btn btn-ghost" id="wxHere" style="width:100%; margin-bottom:8px;">📍 Use this device's location</button>
+    <div class="modal-actions">
+      ${wxConfigured()? '<button class="btn btn-danger" id="wxClear">Turn off</button>' : ''}
+      <button class="btn btn-ghost" id="wxCancel">Cancel</button>
+      <button class="btn btn-primary" id="wxSave">Save</button>
+    </div>
+  `);
+  document.getElementById('wxCancel').onclick = closeModal;
+  const clearBtn = document.getElementById('wxClear');
+  if(clearBtn) clearBtn.onclick = ()=>{
+    state.weather = { lat:null, lon:null, label:'', unit:wxUnit() };
+    wxData = null;
+    try{ localStorage.removeItem(WX_CACHE_KEY); }catch(e){}
+    saveState(); closeModal(); render();
+  };
+  document.getElementById('wxHere').onclick = ()=>{
+    if(!navigator.geolocation){ toast('This browser can\'t share a location.', 'error'); return; }
+    toast('Asking this device where it is…');
+    navigator.geolocation.getCurrentPosition(pos=>{
+      state.weather.lat = Number(pos.coords.latitude.toFixed(3));
+      state.weather.lon = Number(pos.coords.longitude.toFixed(3));
+      state.weather.label = state.weather.label || 'Here';
+      state.weather.unit = document.getElementById('wxUnitSel').value === 'C' ? 'C' : 'F';
+      saveState(); closeModal(); refreshWeather(true); render();
+      toast('Weather location set 📍', 'success');
+    }, ()=>toast('This device wouldn\'t share its location.', 'error'), {timeout:10000});
+  };
+  document.getElementById('wxSave').onclick = async ()=>{
+    const q = document.getElementById('wxQuery').value.trim();
+    const unit = document.getElementById('wxUnitSel').value === 'C' ? 'C' : 'F';
+    state.weather.unit = unit;
+    if(!q){ saveState(); closeModal(); refreshWeather(true); render(); return; }
+    const btn = document.getElementById('wxSave');
+    btn.disabled = true; btn.textContent = 'Looking up…';
+    try{
+      const hit = await wxGeocode(q);
+      state.weather.lat = hit.lat; state.weather.lon = hit.lon; state.weather.label = hit.label;
+      await saveState();
+      closeModal(); refreshWeather(true); render();
+      toast(`Weather set to ${hit.label} 🌤️`, 'success');
+    }catch(err){
+      btn.disabled = false; btn.textContent = 'Save';
+      toast(err.message, 'error');
+    }
+  };
+}
+
+/* ======================= SCREENSAVER PHOTO LIBRARY =======================
+   Photos stay on the device that holds them. They are deliberately NOT part of
+   the synced document: a handful of family pictures would dwarf everything
+   else in the row and be pushed to every phone on every edit. Each screen
+   keeps its own slideshow. */
+const PHOTO_KEY = 'fh-photos';
+const PHOTO_MAX_DIM = 1600;
+const PHOTO_MAX_COUNT = 40;
+let photoLib = null;
+
+function photos(){
+  if(photoLib) return photoLib;
+  try{
+    const raw = localStorage.getItem(PHOTO_KEY);
+    photoLib = raw ? JSON.parse(raw) : [];
+  }catch(e){ photoLib = []; }
+  if(!Array.isArray(photoLib)) photoLib = [];
+  return photoLib;
+}
+function savePhotos(){
+  try{ localStorage.setItem(PHOTO_KEY, JSON.stringify(photoLib||[])); return true; }
+  catch(e){
+    toast('No room left for more photos on this device. Remove a few first.', 'error');
+    return false;
+  }
+}
+async function addPhotoFiles(fileList){
+  const files = Array.from(fileList||[]);
+  if(!files.length) return;
+  const lib = photos();
+  let added = 0;
+  for(const f of files){
+    if(lib.length + added >= PHOTO_MAX_COUNT){ toast(`Photo library is full (${PHOTO_MAX_COUNT} max).`, 'error'); break; }
+    try{
+      const dataUrl = await downscaleToDataUrl(f, PHOTO_MAX_DIM, 0.7);
+      lib.push({id:uid(), dataUrl});
+      added++;
+    }catch(err){ toast(err.message, 'error'); }
+  }
+  if(!added) return;
+  if(!savePhotos()){ lib.splice(lib.length-added, added); return; }
+  toast(`${added} photo${added===1?'':'s'} added to this screen 🖼️`, 'success');
+  render();
+}
+function removePhoto(id){
+  photoLib = photos().filter(p=>p.id!==id);
+  savePhotos(); render();
+}
+
+/* ============================= SMART IMPORT =============================
+   Photograph the school year calendar, the practice schedule taped to the
+   fridge, or a recipe card, and let a vision model turn it into rows.
+
+   The API key is entered by whoever owns the account and is kept in this
+   browser's own storage — NEVER in the synced document, never in the repo.
+   The key travels no further than the device that typed it. The model's answer
+   is never written straight into the board either: everything lands in a
+   review list that has to be ticked and confirmed. */
+const AI_KEY_STORE = 'fh-ai-config';
+const AI_PROVIDERS = {
+  openai: { label:'OpenAI', model:'gpt-4o-mini', keyHint:'sk-…', keysUrl:'https://platform.openai.com/api-keys' },
+  gemini: { label:'Google Gemini', model:'gemini-2.0-flash', keyHint:'AIza…', keysUrl:'https://aistudio.google.com/apikey' }
+};
+function aiConfig(){
+  try{
+    const c = JSON.parse(localStorage.getItem(AI_KEY_STORE) || '{}');
+    return { provider: AI_PROVIDERS[c.provider] ? c.provider : 'openai', key: c.key || '', model: c.model || '' };
+  }catch(e){ return { provider:'openai', key:'', model:'' }; }
+}
+function saveAiConfig(cfg){
+  try{ localStorage.setItem(AI_KEY_STORE, JSON.stringify(cfg)); return true; }
+  catch(e){ toast('This browser wouldn\'t save the key (private mode blocks storage).', 'error'); return false; }
+}
+function clearAiConfig(){ try{ localStorage.removeItem(AI_KEY_STORE); }catch(e){} }
+function aiReady(){ return !!aiConfig().key; }
+
+function smartImportPrompt(want){
+  const today = todayStr();
+  const goal = {
+    events:    'Extract every dated event.',
+    recipe:    'Extract the recipe.',
+    groceries: 'Extract every shopping item.',
+    auto:      'Work out whether this is a schedule of events, a recipe, or a shopping list, and extract it.'
+  }[want] || 'Extract what you can.';
+  return `You read photographs of household paperwork — school calendars, sports schedules, recipe cards, shopping lists — and return structured data.
+
+${goal}
+
+Today's date is ${today}. Resolve relative dates against it. If a year is missing, choose the one that puts the date within the next 12 months.
+
+Reply with JSON only, no prose, matching this shape:
+{
+  "kind": "events" | "recipe" | "groceries" | "unknown",
+  "events": [ { "title": "string", "date": "YYYY-MM-DD", "time": "HH:MM or empty for all-day", "endTime": "HH:MM or empty" } ],
+  "recipe": { "name": "string", "ingredients": "comma separated", "instructions": "string" },
+  "groceries": [ { "name": "string", "qty": "string or empty" } ],
+  "note": "one short sentence about anything you could not read"
+}
+
+Include only the array that matches "kind"; leave the others empty. Never invent an entry you cannot actually read.`;
+}
+
+async function callVisionModel(dataUrl, text, want){
+  const cfg = aiConfig();
+  if(!cfg.key) throw new Error('Add an API key first.');
+  const provider = AI_PROVIDERS[cfg.provider];
+  const model = cfg.model || provider.model;
+  const instruction = smartImportPrompt(want) + (text ? `\n\nThe user also typed:\n${text}` : '');
+
+  if(cfg.provider === 'gemini'){
+    const parts = [{text: instruction}];
+    if(dataUrl) parts.push({inline_data:{mime_type:'image/jpeg', data: dataUrl.split(',')[1]}});
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json', 'x-goog-api-key': cfg.key},
+      body: JSON.stringify({ contents:[{parts}], generationConfig:{ responseMimeType:'application/json', temperature:0 } })
+    });
+    if(!res.ok) throw new Error(await aiErrorMessage(res));
+    const json = await res.json();
+    const out = json.candidates && json.candidates[0] && json.candidates[0].content
+      && json.candidates[0].content.parts && json.candidates[0].content.parts[0].text;
+    if(!out) throw new Error('The model sent back nothing usable.');
+    return out;
+  }
+
+  const content = [{type:'text', text: instruction}];
+  if(dataUrl) content.push({type:'image_url', image_url:{url:dataUrl}});
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method:'POST',
+    headers:{'Content-Type':'application/json', 'Authorization':'Bearer ' + cfg.key},
+    body: JSON.stringify({ model, temperature:0, response_format:{type:'json_object'}, messages:[{role:'user', content}] })
+  });
+  if(!res.ok) throw new Error(await aiErrorMessage(res));
+  const json = await res.json();
+  const out = json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
+  if(!out) throw new Error('The model sent back nothing usable.');
+  return out;
+}
+
+async function aiErrorMessage(res){
+  let detail = '';
+  try{
+    const body = await res.json();
+    detail = (body.error && body.error.message) || '';
+  }catch(e){}
+  if(res.status === 401 || res.status === 403) return 'That API key was rejected. Check it and try again.';
+  if(res.status === 429) return 'The account is out of quota or being rate-limited right now.';
+  return detail || `The model service returned ${res.status}.`;
+}
+
+/* Models occasionally wrap JSON in a code fence despite being asked not to. */
+function parseModelJson(raw){
+  const cleaned = String(raw).trim().replace(/^```(?:json)?/i,'').replace(/```$/,'').trim();
+  let data;
+  try{ data = JSON.parse(cleaned); }
+  catch(e){ throw new Error('The model\'s answer wasn\'t readable. Try a clearer photo.'); }
+  const isDate = s=>/^\d{4}-\d{2}-\d{2}$/.test(s||'');
+  const isTime = s=>/^\d{2}:\d{2}$/.test(s||'');
+  return {
+    kind: data.kind || 'unknown',
+    note: typeof data.note === 'string' ? data.note : '',
+    events: Array.isArray(data.events) ? data.events
+      .filter(e=>e && e.title && isDate(e.date))
+      .map(e=>({ title:String(e.title).slice(0,200), date:e.date, time:isTime(e.time)?e.time:'', endTime:isTime(e.endTime)?e.endTime:'' })) : [],
+    groceries: Array.isArray(data.groceries) ? data.groceries
+      .filter(g=>g && g.name)
+      .map(g=>({ name:String(g.name).slice(0,120), qty:String(g.qty||'').slice(0,40) })) : [],
+    recipe: (data.recipe && data.recipe.name) ? {
+      name: String(data.recipe.name).slice(0,140),
+      ingredients: String(data.recipe.ingredients||'').slice(0,4000),
+      instructions: String(data.recipe.instructions||'').slice(0,8000)
+    } : null
+  };
+}
+
+let smartImportImage = null;   // the downscaled photo waiting to be sent
+let smartImportResult = null;  // the parsed answer waiting to be reviewed
+
+function smartImportModal(presetWant){
+  smartImportImage = null;
+  smartImportResult = null;
+  const want = presetWant || 'auto';
+  if(!aiReady()){ aiKeyModal(()=>smartImportModal(want)); return; }
+  openModal(`
+    <h3>📸 Smart import</h3>
+    <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">Photograph a school calendar, practice schedule, recipe card or shopping list. Nothing is added until you tick it below.</p>
+    <div class="field"><label>What is it?</label>
+      <select id="siWant">
+        <option value="auto" ${want==='auto'?'selected':''}>Work it out</option>
+        <option value="events" ${want==='events'?'selected':''}>Calendar events</option>
+        <option value="recipe" ${want==='recipe'?'selected':''}>A recipe</option>
+        <option value="groceries" ${want==='groceries'?'selected':''}>Shopping list</option>
+      </select>
+    </div>
+    <div class="si-drop" id="siDrop">Tap to choose a photo<br><span style="font-size:12px;">or skip it and just paste text below</span></div>
+    <input type="file" accept="image/*" id="siFile" style="display:none;">
+    <div id="siPreviewWrap"></div>
+    <div class="field" style="margin-top:10px;"><label>Extra detail (optional)</label><textarea id="siText" rows="2" placeholder="Kingston's team only"></textarea></div>
+    <div id="siOut"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="siKey">API key</button>
+      <button class="btn btn-ghost" id="siCancel">Cancel</button>
+      <button class="btn btn-primary" id="siGo">Read it</button>
+    </div>
+  `);
+  document.getElementById('siCancel').onclick = closeModal;
+  document.getElementById('siKey').onclick = ()=>aiKeyModal(()=>smartImportModal(want));
+  const fileInput = document.getElementById('siFile');
+  document.getElementById('siDrop').onclick = ()=>fileInput.click();
+  fileInput.onchange = async ()=>{
+    const f = fileInput.files && fileInput.files[0];
+    if(!f) return;
+    try{
+      smartImportImage = await downscaleToDataUrl(f, 1400, 0.75);
+      document.getElementById('siPreviewWrap').innerHTML = `<img class="si-preview" src="${smartImportImage}" alt="Photo to import">`;
+    }catch(err){ toast(err.message, 'error'); }
+  };
+  document.getElementById('siGo').onclick = async ()=>{
+    const text = document.getElementById('siText').value.trim();
+    if(!smartImportImage && !text){ toast('Pick a photo or type something to read.', 'error'); return; }
+    const btn = document.getElementById('siGo');
+    const out = document.getElementById('siOut');
+    btn.disabled = true;
+    out.innerHTML = `<div class="si-spin">⏳ Reading it…</div>`;
+    try{
+      const raw = await callVisionModel(smartImportImage, text, document.getElementById('siWant').value);
+      smartImportResult = parseModelJson(raw);
+      renderSmartImportReview();
+    }catch(err){
+      out.innerHTML = '';
+      btn.disabled = false;
+      toast(err.message, 'error');
+    }
+  };
+}
+
+function renderSmartImportReview(){
+  const r = smartImportResult;
+  const out = document.getElementById('siOut');
+  const total = r.events.length + r.groceries.length + (r.recipe?1:0);
+  if(!total){
+    out.innerHTML = `<div class="si-spin">Nothing could be read from that. Try a straighter, brighter photo.${r.note? '<br>'+escapeHtml(r.note):''}</div>`;
+    document.getElementById('siGo').disabled = false;
+    return;
+  }
+  let body = '';
+  if(r.events.length){
+    body += `<h4 style="margin:12px 0 2px; font-size:14px;">Events (${r.events.length})</h4><div class="si-list">` +
+      r.events.map((e,i)=>`<label class="si-row">
+          <input type="checkbox" data-siev="${i}" checked>
+          <span style="flex:1;">${escapeHtml(e.title)}<br>
+            <span class="si-when">${e.date}${e.time? ' · '+fmtTime(e.time):' · all day'}</span></span>
+        </label>`).join('') + '</div>';
+  }
+  if(r.groceries.length){
+    body += `<h4 style="margin:12px 0 2px; font-size:14px;">Shopping (${r.groceries.length})</h4><div class="si-list">` +
+      r.groceries.map((g,i)=>`<label class="si-row">
+          <input type="checkbox" data-sigr="${i}" checked>
+          <span style="flex:1;">${escapeHtml(g.name)}</span>
+          <span class="si-when">${escapeHtml(g.qty||'')}</span>
+        </label>`).join('') + '</div>';
+  }
+  if(r.recipe){
+    body += `<h4 style="margin:12px 0 2px; font-size:14px;">Recipe</h4><div class="si-list">
+        <label class="si-row"><input type="checkbox" data-sirc="1" checked>
+          <span style="flex:1;">${escapeHtml(r.recipe.name)}<br>
+            <span class="si-when">${escapeHtml((r.recipe.ingredients||'').slice(0,120))}</span></span>
+        </label></div>`;
+  }
+  if(r.events.length){
+    body += `<div class="field" style="margin-top:10px;"><label>Add events to</label>
+        <select id="siWho">${assignTargetOptionsHtml(state.syncAssignTo)}</select></div>`;
+  }
+  if(r.note) body += `<p class="si-key-note" style="margin-top:8px;">Note from the reader: ${escapeHtml(r.note)}</p>`;
+  out.innerHTML = body;
+  const go = document.getElementById('siGo');
+  go.disabled = false;
+  go.textContent = 'Add ticked items';
+  go.onclick = applySmartImport;
+}
+
+function applySmartImport(){
+  const r = smartImportResult;
+  if(!r) return;
+  const whoSel = document.getElementById('siWho');
+  const personId = whoSel ? whoSel.value : state.syncAssignTo;
+  let events = 0, groceries = 0, recipes = 0;
+
+  document.querySelectorAll('[data-siev]:checked').forEach(cb=>{
+    const e = r.events[Number(cb.dataset.siev)];
+    if(!e) return;
+    state.events.push({
+      id: uid(), personIds: personId ? [personId] : [],
+      title: e.title, date: e.date, time: e.time || '', endTime: e.endTime || '',
+      source: 'smart-import'
+    });
+    events++;
+  });
+  document.querySelectorAll('[data-sigr]:checked').forEach(cb=>{
+    const g = r.groceries[Number(cb.dataset.sigr)];
+    if(!g) return;
+    addGroceryItem(g.name, g.qty);
+    groceries++;
+  });
+  if(document.querySelector('[data-sirc]:checked') && r.recipe){
+    state.meals.recipes.push({ id:uid(), name:r.recipe.name, ingredients:r.recipe.ingredients, instructions:r.recipe.instructions });
+    recipes++;
+  }
+  if(!events && !groceries && !recipes){ toast('Nothing was ticked.', 'error'); return; }
+  saveState(); closeModal();
+  const bits = [];
+  if(events) bits.push(`${events} event${events===1?'':'s'}`);
+  if(groceries) bits.push(`${groceries} grocery item${groceries===1?'':'s'}`);
+  if(recipes) bits.push('1 recipe');
+  toast(`Added ${bits.join(', ')} ✅`, 'success');
+  render();
+}
+
+function aiKeyModal(afterSave){
+  const cfg = aiConfig();
+  const opts = Object.entries(AI_PROVIDERS).map(([id,p])=>
+    `<option value="${id}" ${cfg.provider===id?'selected':''}>${p.label}</option>`).join('');
+  openModal(`
+    <h3>Smart import key</h3>
+    <p class="si-key-note">Smart import sends the photo to a vision model, which needs an API key from your own account. The key is stored <strong>in this browser only</strong> — never synced to the family board, never shared with other devices. Each device needs its own.</p>
+    <div class="field"><label>Provider</label><select id="aiProvider">${opts}</select></div>
+    <div class="field"><label>API key</label><input id="aiKey" type="password" autocomplete="off" placeholder="${escapeHtml(AI_PROVIDERS[cfg.provider].keyHint)}" value="${escapeHtml(cfg.key)}"></div>
+    <div class="field"><label>Model (optional)</label><input id="aiModel" placeholder="${escapeHtml(AI_PROVIDERS[cfg.provider].model)}" value="${escapeHtml(cfg.model)}"></div>
+    <p class="si-key-note" id="aiKeyLink">Get a key: <a href="${AI_PROVIDERS[cfg.provider].keysUrl}" target="_blank" rel="noopener noreferrer">${escapeHtml(AI_PROVIDERS[cfg.provider].keysUrl)}</a></p>
+    <div class="modal-actions">
+      ${cfg.key? '<button class="btn btn-danger" id="aiForget">Forget key</button>':''}
+      <button class="btn btn-ghost" id="aiCancel">Cancel</button>
+      <button class="btn btn-primary" id="aiSave">Save</button>
+    </div>
+  `);
+  const provSel = document.getElementById('aiProvider');
+  provSel.onchange = ()=>{
+    const p = AI_PROVIDERS[provSel.value];
+    document.getElementById('aiKey').placeholder = p.keyHint;
+    document.getElementById('aiModel').placeholder = p.model;
+    document.getElementById('aiKeyLink').innerHTML = `Get a key: <a href="${p.keysUrl}" target="_blank" rel="noopener noreferrer">${escapeHtml(p.keysUrl)}</a>`;
+  };
+  document.getElementById('aiCancel').onclick = closeModal;
+  const forget = document.getElementById('aiForget');
+  if(forget) forget.onclick = ()=>{ clearAiConfig(); closeModal(); render(); toast('Key removed from this device.', 'success'); };
+  document.getElementById('aiSave').onclick = ()=>{
+    const key = document.getElementById('aiKey').value.trim();
+    if(!key){ toast('Paste a key, or press Cancel.', 'error'); return; }
+    const ok = saveAiConfig({ provider: provSel.value, key, model: document.getElementById('aiModel').value.trim() });
+    if(!ok) return;
+    closeModal();
+    if(typeof afterSave === 'function') afterSave(); else render();
+  };
+}
+
 /* ============================= SCREENSAVER ============================= */
 let idleTimer=null;
 /* 0 means "never on its own" — sleep only when the 🌙 button is pressed. */
@@ -1841,13 +2562,57 @@ function enterScreensaver(){
   ss.style.display='flex';
   tickClock();
   renderUpNext();
+  paintScreensaverWeather();
+  refreshWeather();
+  startPhotoShow();
   ss._interval = setInterval(tickClock, 1000);
 }
 function exitScreensaver(){
   const ss = document.getElementById('screensaver');
   ss.style.display='none';
   clearInterval(ss._interval);
+  stopPhotoShow();
   resetIdleTimer();
+}
+
+/* ---- Photo slideshow: two layers cross-fading, so nothing ever blinks ---- */
+let photoTimer = null, photoIndex = 0, photoLayer = 0;
+function photoShowOn(){ return !!(state.screensaver && state.screensaver.photos) && photos().length > 0; }
+function startPhotoShow(){
+  stopPhotoShow();
+  const a = document.getElementById('ssPhotoA'), b = document.getElementById('ssPhotoB');
+  const scrim = document.getElementById('ssScrim');
+  const body = document.getElementById('ssBody');
+  const on = photoShowOn();
+  scrim.style.display = on ? 'block' : 'none';
+  body.style.display = (on && state.screensaver.showClock === false) ? 'none' : 'flex';
+  a.classList.remove('on'); b.classList.remove('on');
+  if(!on){ a.style.backgroundImage=''; b.style.backgroundImage=''; return; }
+  photoIndex = Math.floor(Math.random() * photos().length);
+  photoLayer = 0;
+  showPhoto();
+  const secs = Math.max(5, Number(state.screensaver.seconds) || 15);
+  photoTimer = setInterval(()=>{ photoIndex = (photoIndex + 1) % photos().length; showPhoto(); }, secs*1000);
+}
+function showPhoto(){
+  const lib = photos();
+  if(!lib.length) return;
+  const a = document.getElementById('ssPhotoA'), b = document.getElementById('ssPhotoB');
+  const next = photoLayer === 0 ? a : b, prev = photoLayer === 0 ? b : a;
+  next.style.backgroundImage = `url("${lib[photoIndex].dataUrl}")`;
+  next.classList.add('on');
+  prev.classList.remove('on');
+  photoLayer = photoLayer === 0 ? 1 : 0;
+}
+function stopPhotoShow(){ clearInterval(photoTimer); photoTimer = null; }
+
+function paintScreensaverWeather(){
+  const el = document.getElementById('ssWeather');
+  if(!el) return;
+  const cur = wxData && wxData.current;
+  if(!wxConfigured() || !cur){ el.textContent = ''; return; }
+  const info = wxInfo(cur.weather_code);
+  el.textContent = `${info.icon} ${wxDeg(cur.temperature_2m)}${wxUnit()} · ${info.label}${state.weather.label? ' · '+state.weather.label : ''}`;
 }
 function tickClock(){
   const now = new Date();
@@ -1917,7 +2682,7 @@ function assignTargetOptionsHtml(selectedId){
 }
 
 /* ============================= TAB NAV ============================= */
-let activeTab = 'calendar';
+let activeTab = 'dashboard';
 document.getElementById('tabNav').addEventListener('click', e=>{
   const btn = e.target.closest('button[data-tab]');
   if(!btn) return;
@@ -1926,18 +2691,29 @@ document.getElementById('tabNav').addEventListener('click', e=>{
   render();
 });
 
+/* Jumps used by the dashboard's "see all" links, so a widget can hand off to
+   the tab that actually owns the data. */
+function gotoTab(tab){
+  if(tab === 'groceries'){ mealSubTab = 'grocery'; tab = 'meals'; }
+  activeTab = tab;
+  document.querySelectorAll('#tabNav button').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
+  render();
+}
+
 function render(){
   const main = document.getElementById('mainContent');
   try{
-    if(activeTab==='calendar') main.innerHTML = renderCalendar();
+    if(activeTab==='dashboard') main.innerHTML = renderDashboard();
+    else if(activeTab==='calendar') main.innerHTML = renderCalendar();
     else if(activeTab==='chores') main.innerHTML = renderChores();
+    else if(activeTab==='housekeeping') main.innerHTML = renderHousekeeping();
     else if(activeTab==='todos') main.innerHTML = renderTodos();
     else if(activeTab==='habits') main.innerHTML = renderHabits();
     else if(activeTab==='rewards') main.innerHTML = renderRewards();
     else if(activeTab==='budget') main.innerHTML = renderBudget();
     else if(activeTab==='meals') main.innerHTML = renderMeals();
     else if(activeTab==='settings') main.innerHTML = renderSettings();
-    else { activeTab='calendar'; main.innerHTML = renderCalendar(); } // catch-all for any unknown view
+    else { activeTab='dashboard'; main.innerHTML = renderDashboard(); } // catch-all for any unknown view
     attachHandlers();
   }catch(err){
     console.error('Render failed:', err);
@@ -1950,6 +2726,180 @@ function render(){
     if(rb) rb.onclick = ()=>{ activeTab='calendar'; document.querySelectorAll('#tabNav button').forEach(b=>b.classList.toggle('active', b.dataset.tab==='calendar')); render(); };
     toast('That screen had a problem and was recovered.', 'error');
   }
+}
+
+/* ============================= DASHBOARD =============================
+   The screen the board sits on when nobody is doing anything in particular:
+   today at a glance, pulled from the tabs that already own the data. Nothing
+   here holds state of its own. */
+function greeting(){
+  const h = new Date().getHours();
+  if(h < 5)  return 'Still up?';
+  if(h < 12) return 'Good morning';
+  if(h < 17) return 'Good afternoon';
+  if(h < 21) return 'Good evening';
+  return 'Good night';
+}
+function dashWeatherHtml(){
+  if(!wxConfigured()){
+    return `<button class="wx-set" id="wxSetBtn">🌤️ Add weather</button>`;
+  }
+  const cur = wxData && wxData.current;
+  if(!cur) return `<button class="wx-set" id="wxSetBtn">🌤️ Loading weather…</button>`;
+  const info = wxInfo(cur.weather_code);
+  const daily = (wxData.daily && wxData.daily.time) ? wxData.daily : null;
+  const hi = daily ? daily.temperature_2m_max[0] : null;
+  const lo = daily ? daily.temperature_2m_min[0] : null;
+  return `<div class="wx" id="wxSetBtn" style="cursor:pointer;" title="Change location">
+      <div class="wx-icon">${info.icon}</div>
+      <div>
+        <div class="wx-temp">${wxDeg(cur.temperature_2m)}${wxUnit()}</div>
+        <div class="wx-desc">${info.label}${state.weather.label? ' · '+escapeHtml(state.weather.label):''}</div>
+        <div class="wx-hilo">H ${wxDeg(hi)} / L ${wxDeg(lo)}</div>
+      </div>
+    </div>`;
+}
+function dashForecastHtml(){
+  const daily = wxData && wxData.daily && wxData.daily.time;
+  if(!wxConfigured() || !daily) return '';
+  const days = wxData.daily.time.map((iso,i)=>{
+    const d = parseDate(iso);
+    const info = wxInfo(wxData.daily.weather_code[i]);
+    return `<div class="wx-day">
+        <div class="d">${i===0?'Today':DOW[d.getDay()]}</div>
+        <div class="i">${info.icon}</div>
+        <div class="t">${wxDeg(wxData.daily.temperature_2m_max[i])}</div>
+        <div class="t" style="color:var(--ink-soft);">${wxDeg(wxData.daily.temperature_2m_min[i])}</div>
+      </div>`;
+  }).join('');
+  return `<div class="dash-card"><h3>Next few days</h3><div class="wx-days">${days}</div></div>`;
+}
+function renderDashboard(){
+  const today = todayStr();
+  const now = new Date();
+
+  const todays = state.events.filter(e=>e.date===today)
+    .sort((a,b)=>(a.time||'').localeCompare(b.time||''));
+  const scheduleRows = todays.slice(0,8).map(e=>`
+    <div class="dash-line" data-editevent="${e.id}" style="cursor:pointer;">
+      <span class="dash-dot" style="background:${eventColor(e)};"></span>
+      <span class="t">${e.time? fmtEventTime(e) : 'All day'}</span>
+      <span class="n">${escapeHtml(e.title)}</span>
+      <span class="t">${escapeHtml(eventPeopleLabel(e))}</span>
+    </div>`).join('') || `<div class="dash-none">Nothing on the calendar today 🎉</div>`;
+
+  const openChores = state.chores.filter(c=>!c.done);
+  const choreRows = openChores.slice(0,8).map(c=>{
+    const p = personById(c.personId);
+    return `<div class="dash-line">
+        <button class="todo-check" data-chore="${c.id}" title="Mark done"></button>
+        <span class="n">${escapeHtml(c.name)}</span>
+        <span class="t">${p?escapeHtml(p.name):''} · ${c.points} pt${c.points===1?'':'s'}</span>
+      </div>`;
+  }).join('') || `<div class="dash-none">Every chore is done ⭐</div>`;
+
+  /* Anything due today or already late — the two buckets worth chasing. */
+  const dueTodos = state.todos.items
+    .filter(t=>!t.done && t.due && t.due <= today)
+    .sort((a,b)=>a.due.localeCompare(b.due));
+  const todoRows = dueTodos.slice(0,6).map(t=>{
+    const late = t.due < today;
+    return `<div class="dash-line">
+        <button class="todo-check ${t.priority?'prio':''}" data-todotoggle="${t.id}" title="Mark done"></button>
+        <span class="n">${escapeHtml(t.title)}</span>
+        <span class="t" style="${late?'color:#c62828;font-weight:700;':''}">${late? 'Overdue' : 'Today'}</span>
+      </div>`;
+  }).join('') || `<div class="dash-none">Nothing due today ✅</div>`;
+
+  const dinner = state.meals.plan[today+'|Dinner'] || '';
+  const tomorrow = fmtDate(new Date(now.getFullYear(), now.getMonth(), now.getDate()+1));
+  const dinnerTomorrow = state.meals.plan[tomorrow+'|Dinner'] || '';
+  const lunch = state.meals.plan[today+'|Lunch'] || '';
+
+  const groceryOpen = state.meals.grocery.filter(g=>!g.done);
+  const groceryPreview = groceryOpen.slice(0,5).map(g=>`
+    <div class="dash-line">
+      <button class="todo-check" data-togglegrocery="${g.id}" title="Got it"></button>
+      <span class="n">${escapeHtml(g.name)}</span>
+      <span class="t">${escapeHtml(g.qty||'')}</span>
+    </div>`).join('') || `<div class="dash-none">Grocery list is clear 🛒</div>`;
+
+  const leaders = [...state.people].sort((a,b)=>pointsFor(b.id)-pointsFor(a.id));
+  const chips = leaders.map(p=>`
+    <span class="dash-chip">${avatarHtml(p,'sm')}${escapeHtml(p.name)} <span class="pts" style="color:${p.color};">${pointsFor(p.id)}</span></span>`).join('');
+
+  const hkDue = state.housekeeping.tasks
+    .filter(t=>!t.paused && hkDueness(t) >= 1)
+    .sort((a,b)=>hkDueness(b)-hkDueness(a));
+
+  return `<div class="dash-grid">
+    <div class="dash-hero">
+      <div>
+        <div class="dash-hello">${greeting()}, ${escapeHtml(familyLabel())}</div>
+        <div class="dash-sub">${now.toLocaleDateString([], {weekday:'long', month:'long', day:'numeric'})}</div>
+        <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="wx-set" id="dashAddEvent">➕ Event</button>
+          <button class="wx-set" id="dashSmartImport">📸 Smart import</button>
+        </div>
+      </div>
+      <div style="display:flex; align-items:center; gap:20px; flex-wrap:wrap;">
+        ${dashWeatherHtml()}
+        <div class="dash-clock" id="dashClock">${now.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', hour12: !use24h()})}</div>
+      </div>
+    </div>
+
+    <div class="dash-card">
+      <h3>Today's schedule <button class="more" data-goto="calendar">Calendar →</button></h3>
+      ${scheduleRows}
+      ${todays.length>8? `<div class="dash-none">+ ${todays.length-8} more today</div>`:''}
+    </div>
+
+    <div class="dash-card">
+      <h3>Chores left <button class="more" data-goto="chores">All chores →</button></h3>
+      ${choreRows}
+      ${openChores.length>8? `<div class="dash-none">+ ${openChores.length-8} more</div>`:''}
+    </div>
+
+    <div class="dash-card">
+      <h3>Due now <button class="more" data-goto="todos">To-dos →</button></h3>
+      ${todoRows}
+      ${dueTodos.length>6? `<div class="dash-none">+ ${dueTodos.length-6} more</div>`:''}
+    </div>
+
+    <div class="dash-card">
+      <h3>What's for dinner <button class="more" data-goto="meals">Meals →</button></h3>
+      <div class="dash-meal">${dinner? escapeHtml(dinner) : 'Not planned yet'}</div>
+      ${lunch? `<div class="dash-line"><span class="t">Lunch</span><span class="n">${escapeHtml(lunch)}</span></div>`:''}
+      ${dinnerTomorrow? `<div class="dash-line"><span class="t">Tomorrow</span><span class="n">${escapeHtml(dinnerTomorrow)}</span></div>`:''}
+    </div>
+
+    <div class="dash-card">
+      <h3>Groceries <button class="more" data-goto="groceries">${groceryOpen.length} to get →</button></h3>
+      ${groceryPreview}
+      ${groceryOpen.length>5? `<div class="dash-none">+ ${groceryOpen.length-5} more on the list</div>`:''}
+    </div>
+
+    <div class="dash-card">
+      <h3>Points <button class="more" data-goto="rewards">Rewards →</button></h3>
+      <div class="dash-chips">${chips}</div>
+    </div>
+
+    <div class="dash-card">
+      <h3>Needs cleaning <button class="more" data-goto="housekeeping">Housekeeping →</button></h3>
+      ${hkDue.slice(0,5).map(t=>{
+        const area = hkAreaById(t.areaId);
+        const lvl = hkLevel(hkDueness(t));
+        return `<div class="dash-line">
+            <button class="hk-do" style="width:22px;height:22px;font-size:11px;" data-hkdo="${t.id}" title="Mark it done">✓</button>
+            <span class="n">${escapeHtml(t.name)}</span>
+            <span class="t" style="color:${lvl.color}; font-weight:700;">${area? area.icon : ''} ${lvl.label}</span>
+          </div>`;
+      }).join('') || `<div class="dash-none">Nothing needs cleaning 🧼</div>`}
+      ${hkDue.length>5? `<div class="dash-none">+ ${hkDue.length-5} more waiting</div>`:''}
+    </div>
+
+    ${dashForecastHtml()}
+  </div>`;
 }
 
 /* ============================= CALENDAR ============================= */
@@ -3374,12 +4324,368 @@ function renderBudget(){
     </div>`;
 }
 
+/* ============================= HOUSEKEEPING =============================
+   Modelled on Tody: the house is broken into areas, each area into small jobs,
+   and every job carries how often it wants doing rather than a due date. What
+   you see is "dueness" — how far through its interval a job has drifted — so
+   nothing is ever simply late, it just gets dirtier, and the most-needed job is
+   always the one at the top. Ticking a job resets its clock and pays the
+   person who did it, which is why it shares the points pot with chores. */
+const HK_LEVELS = [
+  {max:0.5,      key:'fresh',   label:'Just done',  color:'#3FA34D'},
+  {max:0.85,     key:'ok',      label:'Holding up', color:'#7CB342'},
+  {max:1.0,      key:'soon',    label:'Due soon',   color:'#E3A731'},
+  {max:1.6,      key:'due',     label:'Due',        color:'#E07C1D'},
+  {max:Infinity, key:'overdue', label:'Overdue',    color:'#C4453B'}
+];
+const HK_EFFORT = [
+  {v:1, label:'1 — a minute'},
+  {v:2, label:'2 — quick'},
+  {v:3, label:'3 — a proper job'},
+  {v:4, label:'4 — hard work'},
+  {v:5, label:'5 — a whole afternoon'}
+];
+const HK_ICONS = ['🍳','🛁','🛏️','🛋️','🧺','🚪','🌳','🚗','🪟','🧹','🐾','🧰','💻','🍽️','🚽','🪴'];
+
+/* The plan a new household starts with, so Housekeeping is useful the moment
+   it's opened rather than an empty page asking for homework. */
+function defaultHousekeeping(){
+  const plan = [
+    ['Kitchen','🍳','#E07C1D', [
+      ['Wash up / load the dishwasher',1,1],['Wipe the counters',2,1],['Clean the stovetop',3,2],
+      ['Take the trash out',2,1],['Mop the floor',7,3],['Clean the microwave',14,2],
+      ['Wipe out the fridge',30,3],['Clean the oven',90,4]
+    ]],
+    ['Bathrooms','🛁','#3B6FE0', [
+      ['Wipe the sink and mirror',3,1],['Clean the toilet',4,2],['Scrub the shower or tub',7,3],
+      ['Fresh towels',7,1],['Mop the floor',7,2],['Restock paper and soap',14,1]
+    ]],
+    ['Bedrooms','🛏️','#9455C9', [
+      ['Make the beds',1,1],['Tidy clothes away',3,1],['Vacuum',7,2],
+      ['Change the sheets',14,2],['Dust the surfaces',10,2],['Sort under the beds',60,3]
+    ]],
+    ['Living room','🛋️','#3FA34D', [
+      ['Tidy up',1,1],['Vacuum',5,2],['Dust the surfaces',10,2],
+      ['Wipe screens and remotes',14,1],['Wash the windows',60,3]
+    ]],
+    ['Laundry','🧺','#E8609F', [
+      ['Run a load',2,1],['Fold and put away',3,2],['Clean the lint trap',7,1],['Wipe the machines',30,2]
+    ]],
+    ['Entry and hall','🚪','#6B6862', [
+      ['Sweep the floor',7,1],['Line the shoes up',7,1],['Wipe door handles and switches',14,1]
+    ]],
+    ['Outside','🌳','#2E7D32', [
+      ['Water the plants',3,1],['Bins out to the curb',7,1],['Sweep the porch',14,2],['Mow the lawn',10,4]
+    ]]
+  ];
+  const areas = [], tasks = [];
+  plan.forEach(([name, icon, color, jobs])=>{
+    const areaId = uid();
+    areas.push({id:areaId, name, icon, color});
+    jobs.forEach(([taskName, freqDays, effort])=>{
+      /* Stagger the starting point somewhere inside each interval, so a new
+         plan reads like a lived-in house rather than 36 alarms at once. */
+      const back = Math.floor(Math.random() * freqDays);
+      const seeded = new Date();
+      seeded.setDate(seeded.getDate() - back);
+      tasks.push({id:uid(), areaId, name:taskName, freqDays, effort, lastDone:fmtDate(seeded), personId:'', paused:false});
+    });
+  });
+  return { areas, tasks, log: [] };
+}
+
+function daysSince(dateStr){
+  if(!dateStr) return null;
+  const then = parseDate(dateStr), now = parseDate(todayStr());
+  return Math.max(0, Math.round((now - then) / 86400000));
+}
+/* 0 = spotless, 1 = exactly due, above 1 = overdue. A job that has never been
+   done starts just past due, which is what makes a fresh plan actionable. */
+function hkDueness(t){
+  const freq = Math.max(1, Number(t.freqDays) || 7);
+  const since = daysSince(t.lastDone);
+  if(since === null) return 1.05;
+  return since / freq;
+}
+function hkLevel(d){ return HK_LEVELS.find(l=>d < l.max) || HK_LEVELS[HK_LEVELS.length-1]; }
+function hkBar(d, small){
+  const lvl = hkLevel(d);
+  const pct = Math.max(4, Math.min(100, Math.round(d*100)));
+  return `<div class="hk-bar ${small?'sm':''}"><span style="width:${pct}%; background:${lvl.color};"></span></div>`;
+}
+function hkTasksIn(areaId){ return state.housekeeping.tasks.filter(t=>t.areaId===areaId && !t.paused); }
+function hkAreaById(id){ return state.housekeeping.areas.find(a=>a.id===id); }
+function hkLastLabel(t){
+  const since = daysSince(t.lastDone);
+  if(since === null) return 'never done';
+  if(since === 0) return 'done today';
+  if(since === 1) return 'done yesterday';
+  return `${since} days ago`;
+}
+
+/* Whoever is holding the screen right now — remembered on this device only, so
+   one person tidying up doesn't reassign everyone else's phone. */
+const HK_WHO_KEY = 'fh-hk-who';
+function hkWho(){
+  let id = null;
+  try{ id = localStorage.getItem(HK_WHO_KEY); }catch(e){}
+  if(id && state.people.some(p=>p.id===id)) return id;
+  return state.people[0] ? state.people[0].id : '';
+}
+function setHkWho(id){ try{ localStorage.setItem(HK_WHO_KEY, id); }catch(e){} }
+
+let hkView = 'now';        // 'now' | 'areas' | 'plan'
+let hkOpenArea = null;     // area drilled into from the areas view
+
+function renderHousekeeping(){
+  const hk = state.housekeeping;
+  const live = hk.tasks.filter(t=>!t.paused);
+  const dueCount = live.filter(t=>hkDueness(t) >= 1).length;
+  const views = [
+    {id:'now',   label:'🧽 Do it now'},
+    {id:'areas', label:'🏠 By area'},
+    {id:'plan',  label:'📋 Plan'}
+  ].map(v=>`<button data-hkview="${v.id}" class="${hkView===v.id?'active':''}">${v.label}</button>`).join('');
+
+  const whoId = hkWho();
+  const whoPicker = state.people.map(p=>`
+    <button data-hkwho="${p.id}" class="${p.id===whoId?'active':''}">${avatarHtml(p,'sm')}${escapeHtml(p.name)}</button>`).join('');
+
+  let body;
+  if(hkView === 'plan') body = renderHkPlan();
+  else if(hkView === 'areas') body = renderHkAreas();
+  else body = renderHkNow();
+
+  const legend = `<div class="hk-legend">${HK_LEVELS.map(l=>`<span><i style="background:${l.color};"></i>${l.label}</span>`).join('')}</div>`;
+
+  return `<div class="card">
+      <div class="hk-top">
+        <div>
+          <h2 class="hk-title">🧹 Housekeeping</h2>
+          <p class="hk-sub">${live.length} jobs across ${hk.areas.length} areas · <strong>${dueCount}</strong> want doing</p>
+        </div>
+        <div class="sub-tabs" style="margin:0;">${views}</div>
+      </div>
+      ${hkView!=='plan' ? `<div class="hk-who">Doing it: ${whoPicker}</div>` : ''}
+      ${body}
+      ${hkView!=='plan' ? legend : ''}
+    </div>`;
+}
+
+function hkTaskRow(t, showArea){
+  const d = hkDueness(t);
+  const lvl = hkLevel(d);
+  const area = hkAreaById(t.areaId);
+  const owner = t.personId ? personById(t.personId) : null;
+  return `<div class="hk-task">
+      <button class="hk-do" data-hkdo="${t.id}" title="Mark it done">✓</button>
+      <div class="hk-task-main">
+        <div class="hk-task-name">${escapeHtml(t.name)}</div>
+        ${hkBar(d, true)}
+        <div class="hk-task-meta">
+          ${showArea && area ? `<span>${area.icon} ${escapeHtml(area.name)}</span>` : ''}
+          <span style="color:${lvl.color}; font-weight:700;">${lvl.label}</span>
+          <span class="mono">every ${t.freqDays}d · ${hkLastLabel(t)}</span>
+          ${owner ? `<span>${escapeHtml(owner.name)}'s job</span>` : ''}
+        </div>
+      </div>
+      <span class="hk-eff">${t.effort}</span>
+      <div class="todo-actions"><button data-hkedit="${t.id}" title="Edit">✎</button></div>
+    </div>`;
+}
+
+function renderHkNow(){
+  const live = state.housekeeping.tasks.filter(t=>!t.paused)
+    .sort((a,b)=>hkDueness(b)-hkDueness(a));
+  const due = live.filter(t=>hkDueness(t) >= 0.85);
+  const rest = live.filter(t=>hkDueness(t) < 0.85).slice(0,8);
+  if(!live.length) return `<div class="empty">
+      <div class="display">No cleaning plan yet</div>
+      <p>Open <strong>Plan</strong> to add your first area.</p>
+    </div>`;
+  if(!due.length) return `<div class="empty">
+      <div class="display">The house is in good shape 🎉</div>
+      <p>Nothing is due. The next few jobs coming round:</p>
+      <div class="hk-list" style="text-align:left;">${rest.map(t=>hkTaskRow(t,true)).join('')}</div>
+    </div>`;
+  return `<div class="hk-list">${due.map(t=>hkTaskRow(t,true)).join('')}</div>
+    ${rest.length? `<div class="hk-area-head"><span class="hk-area-name">Not yet, but soon</span></div>
+      <div class="hk-list">${rest.map(t=>hkTaskRow(t,true)).join('')}</div>` : ''}`;
+}
+
+function renderHkAreas(){
+  const areas = state.housekeeping.areas;
+  if(!areas.length) return `<div class="empty"><div class="display">No areas yet</div><p>Open <strong>Plan</strong> to add one.</p></div>`;
+  const cards = areas.map(a=>{
+    const tasks = hkTasksIn(a.id);
+    /* An area is only as clean as its worst job — an average would hide the
+       one thing that actually needs doing. */
+    const worst = tasks.reduce((m,t)=>Math.max(m, hkDueness(t)), 0);
+    const dueHere = tasks.filter(t=>hkDueness(t) >= 1).length;
+    const lvl = hkLevel(worst);
+    return `<div class="hk-area ${hkOpenArea===a.id?'is-open':''}" data-hkarea="${a.id}">
+        <div class="hk-area-top">
+          <span class="hk-icon">${a.icon}</span>
+          <span class="hk-area-name">${escapeHtml(a.name)}</span>
+          <span class="hk-pill" style="background:${lvl.color};">${dueHere? dueHere+' due' : 'clean'}</span>
+        </div>
+        ${hkBar(worst)}
+        <div class="hk-area-meta">${tasks.length} job${tasks.length===1?'':'s'} · ${lvl.label.toLowerCase()}</div>
+      </div>`;
+  }).join('');
+
+  let drill = '';
+  if(hkOpenArea){
+    const a = hkAreaById(hkOpenArea);
+    if(a){
+      const tasks = hkTasksIn(a.id).sort((x,y)=>hkDueness(y)-hkDueness(x));
+      drill = `<div class="hk-area-head">
+          <span class="hk-icon">${a.icon}</span>
+          <span class="hk-area-name">${escapeHtml(a.name)}</span>
+          <button class="btn btn-ghost" style="margin-left:auto; font-size:12px; padding:4px 10px;" data-hkaddtask="${a.id}">+ Job</button>
+        </div>
+        <div class="hk-list">${tasks.map(t=>hkTaskRow(t,false)).join('') || '<div class="dash-none">No jobs in here yet.</div>'}</div>`;
+    }
+  }
+  return `<div class="hk-area-grid">${cards}</div>${drill}`;
+}
+
+function renderHkPlan(){
+  const blocks = state.housekeeping.areas.map(a=>{
+    const tasks = state.housekeeping.tasks.filter(t=>t.areaId===a.id);
+    const rows = tasks.map(t=>`
+      <div class="hk-task">
+        <span class="hk-icon" style="font-size:15px; width:22px; text-align:center; opacity:${t.paused?0.4:1};">${t.paused?'⏸️':'•'}</span>
+        <div class="hk-task-main">
+          <div class="hk-task-name" style="${t.paused?'color:var(--ink-soft);':''}">${escapeHtml(t.name)}</div>
+          <div class="hk-task-meta"><span class="mono">every ${t.freqDays} days · effort ${t.effort}</span>${t.paused?'<span>paused</span>':''}</div>
+        </div>
+        <div class="todo-actions">
+          <button data-hkedit="${t.id}" title="Edit">✎</button>
+          <button data-hkdeltask="${t.id}" title="Delete">✕</button>
+        </div>
+      </div>`).join('') || '<div class="dash-none">No jobs here yet.</div>';
+    return `<div class="hk-area-head">
+        <span class="hk-icon">${a.icon}</span>
+        <span class="hk-area-name">${escapeHtml(a.name)}</span>
+        <div class="todo-actions" style="margin-left:auto;">
+          <button data-hkaddtask="${a.id}" title="Add a job">＋</button>
+          <button data-hkeditarea="${a.id}" title="Edit area">✎</button>
+          <button data-hkdelarea="${a.id}" title="Delete area">✕</button>
+        </div>
+      </div>
+      <div class="hk-list">${rows}</div>`;
+  }).join('') || '<div class="empty"><div class="display">Nothing planned yet</div></div>';
+
+  return `<p style="font-size:13px; color:var(--ink-soft);">Every job carries how often it wants doing, not a date. The meters fill up on their own from there.</p>
+    ${blocks}
+    <div class="add-row" style="margin-top:16px;">
+      <button class="btn btn-primary" id="hkAddArea">+ Add an area</button>
+      <button class="btn btn-ghost" id="hkResetPlan">Start from the standard plan</button>
+    </div>`;
+}
+
+function hkDoTask(id){
+  const t = state.housekeeping.tasks.find(x=>x.id===id);
+  if(!t) return;
+  const whoId = hkWho();
+  t.lastDone = todayStr();
+  state.housekeeping.log.unshift({id:uid(), taskId:t.id, date:todayStr(), personId:whoId, points:t.effort});
+  /* The log is a scoreboard, not an archive — a few hundred entries is plenty. */
+  if(state.housekeeping.log.length > 400) state.housekeeping.log.length = 400;
+  if(whoId) addPoints(whoId, t.effort);
+  saveState(); render();
+  const who = whoId ? personById(whoId) : null;
+  toast(`${t.name} — done${who? `, +${t.effort} pt${t.effort===1?'':'s'} for ${who.name}` : ''} ✨`, 'success');
+}
+
+function hkTaskModal(existing, areaId){
+  const t = existing || {id:null, areaId: areaId || (state.housekeeping.areas[0]||{}).id, name:'', freqDays:7, effort:2, lastDone:null, personId:'', paused:false};
+  const areaOpts = state.housekeeping.areas.map(a=>`<option value="${a.id}" ${a.id===t.areaId?'selected':''}>${a.icon} ${escapeHtml(a.name)}</option>`).join('');
+  openModal(`
+    <h3>${existing?'Edit job':'Add job'}</h3>
+    <div class="field"><label>What is it?</label><input id="hkName" value="${escapeHtml(t.name)}" placeholder="Mop the floor"></div>
+    <div class="field"><label>Area</label><select id="hkArea">${areaOpts}</select></div>
+    <div class="field"><label>How often — every N days</label><input type="number" id="hkFreq" min="1" max="730" value="${t.freqDays}"></div>
+    <div class="field"><label>Effort</label><select id="hkEffort">${HK_EFFORT.map(e=>`<option value="${e.v}" ${e.v===t.effort?'selected':''}>${e.label}</option>`).join('')}</select></div>
+    <div class="field"><label>Whose job (optional)</label><select id="hkPerson"><option value="">Anyone</option>${peopleOptionsHtml(t.personId)}</select></div>
+    <div class="field"><label>Last done</label><input type="date" id="hkLast" value="${t.lastDone||''}"></div>
+    <div class="field" style="display:flex; align-items:center; gap:8px;">
+      <input type="checkbox" id="hkPaused" style="width:18px;height:18px;" ${t.paused?'checked':''}>
+      <label style="margin:0;">Pause this one — keep it, but stop it filling up</label>
+    </div>
+    <div class="modal-actions">
+      ${existing? '<button class="btn btn-danger" id="hkDelete">Delete</button>':''}
+      <button class="btn btn-ghost" id="hkCancel">Cancel</button>
+      <button class="btn btn-primary" id="hkSave">Save</button>
+    </div>
+  `);
+  document.getElementById('hkCancel').onclick = closeModal;
+  const del = document.getElementById('hkDelete');
+  if(del) del.onclick = ()=>requireUnlock(()=>{
+    state.housekeeping.tasks = state.housekeeping.tasks.filter(x=>x.id!==t.id);
+    saveState(); closeModal(); render();
+  });
+  document.getElementById('hkSave').onclick = ()=>{
+    const name = document.getElementById('hkName').value.trim();
+    if(!name){ toast('Give the job a name.', 'error'); return; }
+    const freq = Math.max(1, Math.min(730, parseInt(document.getElementById('hkFreq').value, 10) || 7));
+    const data = {
+      name,
+      areaId: document.getElementById('hkArea').value,
+      freqDays: freq,
+      effort: Number(document.getElementById('hkEffort').value) || 2,
+      personId: document.getElementById('hkPerson').value,
+      lastDone: document.getElementById('hkLast').value || null,
+      paused: document.getElementById('hkPaused').checked
+    };
+    if(existing) Object.assign(t, data);
+    else state.housekeeping.tasks.push({id:uid(), ...data});
+    saveState(); closeModal(); render();
+  };
+}
+
+function hkAreaModal(existing){
+  const a = existing || {id:null, name:'', icon:'🧹', color:'#3B6FE0'};
+  openModal(`
+    <h3>${existing?'Edit area':'Add area'}</h3>
+    <div class="field"><label>Name</label><input id="hkAreaName" value="${escapeHtml(a.name)}" placeholder="Playroom"></div>
+    <div class="field"><label>Icon</label>
+      <div class="emoji-grid" id="hkIconGrid">${HK_ICONS.map(i=>`<button type="button" class="emoji-opt ${i===a.icon?'selected':''}" data-hkicon="${i}">${i}</button>`).join('')}</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="hkAreaCancel">Cancel</button>
+      <button class="btn btn-primary" id="hkAreaSave">Save</button>
+    </div>
+  `);
+  let icon = a.icon;
+  document.querySelectorAll('[data-hkicon]').forEach(b=>b.onclick = ()=>{
+    icon = b.dataset.hkicon;
+    document.querySelectorAll('[data-hkicon]').forEach(x=>x.classList.toggle('selected', x===b));
+  });
+  document.getElementById('hkAreaCancel').onclick = closeModal;
+  document.getElementById('hkAreaSave').onclick = ()=>{
+    const name = document.getElementById('hkAreaName').value.trim();
+    if(!name){ toast('Give the area a name.', 'error'); return; }
+    if(existing){ a.name = name; a.icon = icon; }
+    else state.housekeeping.areas.push({id:uid(), name, icon, color:'#3B6FE0'});
+    saveState(); closeModal(); render();
+  };
+}
+
+
 /* ============================= MEALS ============================= */
 let mealSubTab = 'plan';
 const MEAL_SLOTS = ['Breakfast','Lunch','Dinner'];
+const MEAL_TABS = [
+  {id:'plan',    label:'📆 Plan'},
+  {id:'recipes', label:'📖 Recipes'},
+  {id:'pantry',  label:'🧺 Pantry'},
+  {id:'grocery', label:'🛒 Groceries'}
+];
 function renderMeals(){
-  const tabs = ['plan','recipes','pantry','grocery'].map(t=>
-    `<button data-mealtab="${t}" class="${mealSubTab===t?'active':''}">${t[0].toUpperCase()+t.slice(1)}</button>`).join('');
+  const tabs = MEAL_TABS.map(t=>
+    `<button data-mealtab="${t.id}" class="${mealSubTab===t.id?'active':''}">${t.label}</button>`).join('');
   let body='';
   if(mealSubTab==='plan') body = renderMealPlan();
   else if(mealSubTab==='recipes') body = renderRecipes();
@@ -3429,19 +4735,198 @@ function renderPantry(){
       <button class="btn btn-primary" id="pantryAddBtn">Add</button>
     </div>`;
 }
-function renderGrocery(){
-  const rows = state.meals.grocery.map(item=>`
-    <div class="list-row">
-      <input type="checkbox" ${item.done?'checked':''} data-togglegrocery="${item.id}">
-      <span class="txt ${item.done?'done':''}">${escapeHtml(item.name)}</span>
-      <button class="row-x" data-delgrocery="${item.id}">✕</button>
-    </div>`).join('') || `<div class="empty">Grocery list is empty 🛒</div>`;
-  return `${rows}
-    <div class="add-row">
-      <input id="groceryName" placeholder="Add an item">
-      <button class="btn btn-primary" id="groceryAddBtn">Add</button>
-    </div>`;
+/* ======================= GROCERIES (Reminders-style) =======================
+   Apple's Groceries list sorts what you type into aisles on its own. Same idea
+   here, done with keywords rather than a service: type "milk", it lands under
+   Dairy & Eggs. The guess is always overridable in the item's own sheet. */
+const GROCERY_CATS = [
+  {id:'produce',   label:'Produce',            icon:'🥬'},
+  {id:'bakery',    label:'Bread & Bakery',     icon:'🍞'},
+  {id:'meat',      label:'Meat & Seafood',     icon:'🥩'},
+  {id:'dairy',     label:'Dairy & Eggs',       icon:'🥛'},
+  {id:'frozen',    label:'Frozen',             icon:'🧊'},
+  {id:'pantry',    label:'Pantry',             icon:'🥫'},
+  {id:'snacks',    label:'Snacks & Sweets',    icon:'🍪'},
+  {id:'drinks',    label:'Beverages',          icon:'🧃'},
+  {id:'household', label:'Household',          icon:'🧽'},
+  {id:'personal',  label:'Personal Care',      icon:'🧴'},
+  {id:'other',     label:'Other',              icon:'🛒'}
+];
+const GROCERY_KEYWORDS = {
+  produce:  ['apple','banana','orange','lemon','lime','grape','berry','berries','strawberr','blueberr','melon','avocado','tomato','potato','onion','garlic','carrot','celery','lettuce','spinach','kale','broccoli','cucumber','pepper','mushroom','salad','herb','cilantro','parsley','basil','ginger','corn','pear','peach','plum','zucchini','squash','cabbage','bean sprout','fruit','veg'],
+  bakery:   ['bread','bagel','bun','roll','tortilla','pita','naan','croissant','muffin','baguette','cake','donut','doughnut','pastry','biscuit'],
+  meat:     ['chicken','beef','steak','ground','pork','bacon','sausage','ham','turkey','lamb','fish','salmon','tuna','shrimp','tilapia','cod','crab','meat','deli'],
+  dairy:    ['milk','cheese','yogurt','yoghurt','butter','cream','egg','sour cream','cottage','mozzarella','cheddar','parmesan','half and half','creamer'],
+  frozen:   ['frozen','ice cream','popsicle','pizza','waffle','frozen fries','freezer'],
+  pantry:   ['rice','pasta','spaghetti','noodle','flour','sugar','salt','pepper','oil','olive oil','vinegar','sauce','ketchup','mustard','mayo','soup','broth','stock','can','canned','bean','lentil','cereal','oat','peanut butter','jam','jelly','honey','spice','seasoning','baking','yeast','tomato paste','taco','syrup'],
+  snacks:   ['chip','cracker','cookie','candy','chocolate','snack','popcorn','pretzel','granola bar','nuts','almond','cashew','trail mix','gum','tortilla chip'],
+  drinks:   ['water','juice','soda','pop','coffee','tea','beer','wine','drink','gatorade','lemonade','sparkling','milk tea','energy drink'],
+  household:['paper towel','toilet paper','tissue','napkin','detergent','soap','bleach','cleaner','sponge','trash bag','garbage bag','foil','plastic wrap','ziploc','dish','laundry','light bulb','battery'],
+  personal: ['shampoo','conditioner','toothpaste','toothbrush','deodorant','razor','lotion','sunscreen','vitamin','medicine','ibuprofen','tylenol','bandage','floss','body wash','diaper','wipes','tampon','pad']
+};
+/* Longest match wins, so "tortilla chips" lands in snacks rather than being
+   caught by the "tortilla" in bakery. */
+function guessGroceryCat(name){
+  const n = (name||'').toLowerCase();
+  if(!n) return 'other';
+  let best = null, bestLen = 0;
+  for(const cat of Object.keys(GROCERY_KEYWORDS)){
+    for(const k of GROCERY_KEYWORDS[cat]){
+      if(k.length > bestLen && n.includes(k)){ best = cat; bestLen = k.length; }
+    }
+  }
+  return best || 'other';
 }
+function groceryCat(id){ return GROCERY_CATS.find(c=>c.id===id) || GROCERY_CATS[GROCERY_CATS.length-1]; }
+
+/* Collapsed aisles are a per-screen preference, so they live in memory only —
+   nobody wants their phone folding sections on the kitchen display. */
+let grocCollapsed = {};
+
+function renderGrocery(){
+  const all = state.meals.grocery;
+  const open = all.filter(g=>!g.done);
+  const done = all.filter(g=>g.done);
+  const showDone = !!(state.completedOpen && state.completedOpen.grocery);
+
+  const row = g=>`
+    <div class="groc-row ${g.done?'is-done':''}">
+      <button class="todo-check ${g.done?'on':''}" data-togglegrocery="${g.id}" title="${g.done?'Put back on the list':'Got it'}">${g.done?'✓':''}</button>
+      <div class="groc-main" data-editgrocery="${g.id}" style="cursor:pointer;">
+        <div class="groc-name">${escapeHtml(g.name)}</div>
+        ${g.note? `<div class="groc-note">${escapeHtml(g.note)}</div>`:''}
+      </div>
+      ${g.qty? `<span class="groc-qty">${escapeHtml(g.qty)}</span>`:''}
+      <div class="todo-actions"><button data-delgrocery="${g.id}" title="Remove">✕</button></div>
+    </div>`;
+
+  const sections = GROCERY_CATS.map(cat=>{
+    const items = open.filter(g=>(g.cat||'other')===cat.id).sort((a,b)=>(a.order||0)-(b.order||0));
+    if(!items.length) return '';
+    const folded = !!grocCollapsed[cat.id];
+    return `<div class="groc-sec">
+        <div class="groc-sec-head" data-grocsec="${cat.id}">
+          <span class="caret">${folded?'▸':'▾'}</span>${cat.icon} ${cat.label}
+          <span class="cnt">${items.length}</span>
+        </div>
+        ${folded? '' : items.map(row).join('')}
+      </div>`;
+  }).join('');
+
+  const body = open.length ? sections : `<div class="empty">
+      <div class="display">Nothing to pick up 🛒</div>
+      <p>Add what you're out of and it sorts itself into aisles.</p>
+    </div>`;
+
+  const doneBlock = done.length ? `
+    <div class="done-drawer">
+      <div class="done-drawer-head" data-groctoggledone="1">
+        <span class="caret">${showDone?'▾':'▸'}</span>
+        <span>In the cart</span>
+        <span class="cnt">${done.length}</span>
+        <button class="btn btn-ghost" style="margin-left:auto; font-size:11px; padding:3px 9px;" id="grocClearDone">Clear</button>
+      </div>
+      ${showDone? `<div class="done-drawer-body">${done.map(row).join('')}</div>` : ''}
+    </div>` : '';
+
+  return `
+    <div class="groc-head">
+      <div>
+        <h2 class="groc-title">Groceries</h2>
+        <p class="groc-sub">${open.length} to get${done.length? ` · ${done.length} in the cart`:''}</p>
+      </div>
+      <div class="groc-tools">
+        <button class="btn btn-ghost" id="grocFromPlan">🍽️ From this week's meals</button>
+        <button class="btn btn-ghost" id="grocSmartImport">📸 Smart import</button>
+      </div>
+    </div>
+    ${body}
+    <div class="groc-new">
+      <span class="ring"></span>
+      <input id="grocNewName" placeholder="New Item" autocomplete="off">
+      <input id="grocNewQty" class="groc-qty-in" placeholder="qty" autocomplete="off">
+    </div>
+    ${doneBlock}`;
+}
+
+function addGroceryItem(name, qty, note, cat){
+  const clean = (name||'').trim();
+  if(!clean) return null;
+  const item = {
+    id: uid(),
+    name: clean,
+    qty: (qty||'').trim(),
+    note: (note||'').trim(),
+    cat: cat || guessGroceryCat(clean),
+    done: false,
+    order: state.meals.grocery.length
+  };
+  state.meals.grocery.push(item);
+  return item;
+}
+
+function groceryModal(id){
+  const g = state.meals.grocery.find(x=>x.id===id);
+  if(!g) return;
+  openModal(`
+    <h3>Item</h3>
+    <div class="field"><label>Name</label><input id="grName" value="${escapeHtml(g.name)}"></div>
+    <div class="field"><label>Quantity</label><input id="grQty" value="${escapeHtml(g.qty||'')}" placeholder="2 lbs"></div>
+    <div class="field"><label>Note</label><input id="grNote" value="${escapeHtml(g.note||'')}" placeholder="the low-sugar one"></div>
+    <div class="field"><label>Aisle</label>
+      <select id="grCat">${GROCERY_CATS.map(c=>`<option value="${c.id}" ${((g.cat||'other')===c.id)?'selected':''}>${c.icon} ${c.label}</option>`).join('')}</select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-danger" id="grDelete">Delete</button>
+      <button class="btn btn-ghost" id="grCancel">Cancel</button>
+      <button class="btn btn-primary" id="grSave">Save</button>
+    </div>
+  `);
+  document.getElementById('grCancel').onclick = closeModal;
+  document.getElementById('grDelete').onclick = ()=>{
+    state.meals.grocery = state.meals.grocery.filter(x=>x.id!==id);
+    saveState(); closeModal(); render();
+  };
+  document.getElementById('grSave').onclick = ()=>{
+    const name = document.getElementById('grName').value.trim();
+    if(!name){ toast('Give the item a name.', 'error'); return; }
+    g.name = name;
+    g.qty  = document.getElementById('grQty').value.trim();
+    g.note = document.getElementById('grNote').value.trim();
+    g.cat  = document.getElementById('grCat').value;
+    saveState(); closeModal(); render();
+  };
+}
+
+/* Pulls every ingredient line off the saved recipes that this week's plan
+   actually names, so the shop matches the menu. */
+function groceryFromMealPlan(){
+  const start = startOfWeek(parseDate(state.calDate));
+  const wanted = new Set();
+  for(let i=0; i<7; i++){
+    const d = new Date(start); d.setDate(start.getDate()+i);
+    MEAL_SLOTS.forEach(slot=>{
+      const meal = state.meals.plan[fmtDate(d)+'|'+slot];
+      if(meal) wanted.add(meal.trim().toLowerCase());
+    });
+  }
+  if(!wanted.size){ toast('Nothing is planned for this week yet.', 'error'); return; }
+  const existing = new Set(state.meals.grocery.filter(g=>!g.done).map(g=>g.name.toLowerCase()));
+  let added = 0;
+  state.meals.recipes.forEach(r=>{
+    if(!wanted.has((r.name||'').trim().toLowerCase())) return;
+    (r.ingredients||'').split(/[,\n]/).map(s=>s.trim()).filter(Boolean).forEach(ing=>{
+      if(existing.has(ing.toLowerCase())) return;
+      existing.add(ing.toLowerCase());
+      addGroceryItem(ing);
+      added++;
+    });
+  });
+  if(!added){ toast('No saved recipe matched this week\'s plan — add ingredients to those recipes first.', 'error'); return; }
+  saveState(); render();
+  toast(`${added} ingredient${added===1?'':'s'} added 🛒`, 'success');
+}
+
 function recipeModal(){
   openModal(`
     <h3>Add recipe</h3>
@@ -3564,6 +5049,48 @@ function renderSettings(){
         <select id="sleepAfterSel">
           ${SLEEP_OPTIONS.map(o=>`<option value="${o.min}" ${sleepAfterMin()===o.min?'selected':''}>${o.label}</option>`).join('')}
         </select>
+      </div>
+
+      <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
+
+      <h3 style="font-size:15px;">Weather</h3>
+      <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">
+        ${wxConfigured()
+          ? `Showing weather for <strong>${escapeHtml(state.weather.label || 'the saved location')}</strong> in °${wxUnit()}.`
+          : `Add a location and the Home screen and screensaver show the current conditions and a five-day forecast. Free, no account — powered by Open-Meteo.`}
+      </p>
+      <button class="btn btn-ghost" id="weatherSetBtn">🌤️ ${wxConfigured()? 'Change location' : 'Add weather'}</button>
+
+      <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
+
+      <h3 style="font-size:15px;">Screensaver photos</h3>
+      <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">Family photos fade behind the clock while the screen sleeps. Photos are kept <strong>on this device only</strong> — they're far too big to send round the family board, so each screen has its own set. ${photos().length}/${PHOTO_MAX_COUNT} used.</p>
+      ${photos().length? `<div class="photo-grid">${photos().map(p=>`
+        <div class="photo-chip"><img src="${p.dataUrl}" alt="Screensaver photo"><button data-delphoto="${p.id}" title="Remove">✕</button></div>`).join('')}</div>` : ''}
+      <div class="add-row">
+        <input type="file" accept="image/*" multiple id="photoFileInput">
+      </div>
+      <div class="field" style="display:flex; align-items:center; gap:8px; margin-top:8px;">
+        <input type="checkbox" id="ssPhotosOn" style="width:18px;height:18px;" ${state.screensaver.photos?'checked':''}>
+        <label style="margin:0;">Use photos as the screensaver</label>
+      </div>
+      <div class="field" style="display:flex; align-items:center; gap:8px;">
+        <input type="checkbox" id="ssShowClock" style="width:18px;height:18px;" ${state.screensaver.showClock?'checked':''}>
+        <label style="margin:0;">Keep the clock and today's events on top</label>
+      </div>
+      <div class="add-row">
+        <select id="ssSecondsSel">
+          ${[8,15,30,60,120].map(s=>`<option value="${s}" ${Number(state.screensaver.seconds)===s?'selected':''}>Change photo every ${s<60? s+' seconds' : (s/60)+' minute'+(s===60?'':'s')}</option>`).join('')}
+        </select>
+      </div>
+
+      <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
+
+      <h3 style="font-size:15px;">Smart import</h3>
+      <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">Photograph a school calendar, practice schedule, recipe card or shopping list and have it read into the app. Needs an API key from your own OpenAI or Google account. The key stays <strong>in this browser only</strong> — it is never synced to the family board and never shared with other devices, so each device needs its own. Everything it reads is shown for review before anything is added.</p>
+      <div class="add-row">
+        <button class="btn btn-ghost" id="aiKeyBtn">🔑 ${aiReady()? 'Change or remove key' : 'Add an API key'}</button>
+        <button class="btn btn-mustard" id="settingsSmartImport">📸 Try smart import</button>
       </div>
 
       <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
@@ -5423,24 +6950,119 @@ function attachHandlers(){
   });
   document.querySelectorAll('[data-topantrygrocery]').forEach(b=>b.onclick = ()=>{
     const item = state.meals.pantry.find(i=>i.id===b.dataset.topantrygrocery);
-    if(item) state.meals.grocery.push({id:uid(), name:item.name, done:false});
+    if(item) addGroceryItem(item.name, item.qty);
     saveState(); mealSubTab='grocery'; render();
   });
-  const groceryAddBtn = document.getElementById('groceryAddBtn');
-  if(groceryAddBtn) groceryAddBtn.onclick = ()=>{
-    const name = document.getElementById('groceryName').value.trim();
-    if(!name) return;
-    state.meals.grocery.push({id:uid(), name, done:false});
+
+  // Groceries
+  const grocNew = document.getElementById('grocNewName');
+  if(grocNew){
+    const grocQty = document.getElementById('grocNewQty');
+    /* Re-rendering blurs the field being typed in, which fires this handler
+       again mid-render. One flag keeps a single keystroke to a single item. */
+    let committing = false;
+    const commit = ()=>{
+      if(committing) return;
+      if(!grocNew.value.trim()) return;
+      committing = true;
+      addGroceryItem(grocNew.value, grocQty.value);
+      grocNew.value = ''; grocQty.value = '';
+      saveState(); render();
+      /* Keep the cursor where it was so a whole list can be typed in one go. */
+      const again = document.getElementById('grocNewName');
+      if(again) again.focus();
+    };
+    grocNew.onkeydown = e=>{ if(e.key==='Enter'){ e.preventDefault(); commit(); } };
+    grocQty.onkeydown = e=>{ if(e.key==='Enter'){ e.preventDefault(); commit(); } };
+    /* Moving between the name and quantity boxes is still the same item — only
+       leaving the row altogether counts as finishing it. */
+    const leftTheRow = e=>{
+      const to = e.relatedTarget;
+      if(to === grocNew || to === grocQty) return;
+      commit();
+    };
+    grocNew.onblur = leftTheRow;
+    grocQty.onblur = leftTheRow;
+  }
+  document.querySelectorAll('[data-grocsec]').forEach(h=>h.onclick = ()=>{
+    const id = h.dataset.grocsec;
+    grocCollapsed[id] = !grocCollapsed[id];
+    render();
+  });
+  document.querySelectorAll('[data-editgrocery]').forEach(el=>el.onclick = ()=>groceryModal(el.dataset.editgrocery));
+  document.querySelectorAll('[data-groctoggledone]').forEach(el=>el.onclick = e=>{
+    if(e.target.id === 'grocClearDone') return;
+    state.completedOpen.grocery = !state.completedOpen.grocery;
+    saveState(); render();
+  });
+  const grocClearDone = document.getElementById('grocClearDone');
+  if(grocClearDone) grocClearDone.onclick = ()=>{
+    state.meals.grocery = state.meals.grocery.filter(g=>!g.done);
     saveState(); render();
   };
+  const grocFromPlan = document.getElementById('grocFromPlan');
+  if(grocFromPlan) grocFromPlan.onclick = groceryFromMealPlan;
+  const grocSmartImport = document.getElementById('grocSmartImport');
+  if(grocSmartImport) grocSmartImport.onclick = ()=>smartImportModal('groceries');
   document.querySelectorAll('[data-togglegrocery]').forEach(b=>b.onclick = ()=>{
     const item = state.meals.grocery.find(i=>i.id===b.dataset.togglegrocery);
+    if(!item) return;
     item.done = !item.done;
     saveState(); render();
   });
   document.querySelectorAll('[data-delgrocery]').forEach(b=>b.onclick = ()=>{
     state.meals.grocery = state.meals.grocery.filter(i=>i.id!==b.dataset.delgrocery);
     saveState(); render();
+  });
+
+  // Dashboard
+  document.querySelectorAll('[data-goto]').forEach(b=>b.onclick = e=>{ e.stopPropagation(); gotoTab(b.dataset.goto); });  const dashAddEvent = document.getElementById('dashAddEvent');
+  if(dashAddEvent) dashAddEvent.onclick = ()=>eventModal(null, todayStr());
+  const dashSmartImport = document.getElementById('dashSmartImport');
+  if(dashSmartImport) dashSmartImport.onclick = ()=>smartImportModal('auto');
+  const wxSetBtn = document.getElementById('wxSetBtn');
+  if(wxSetBtn) wxSetBtn.onclick = weatherModal;
+
+  // Housekeeping
+  document.querySelectorAll('[data-hkview]').forEach(b=>b.onclick = ()=>{ hkView = b.dataset.hkview; render(); });
+  document.querySelectorAll('[data-hkwho]').forEach(b=>b.onclick = ()=>{ setHkWho(b.dataset.hkwho); render(); });
+  document.querySelectorAll('[data-hkdo]').forEach(b=>b.onclick = ()=>hkDoTask(b.dataset.hkdo));
+  document.querySelectorAll('[data-hkedit]').forEach(b=>b.onclick = e=>{
+    e.stopPropagation();
+    hkTaskModal(state.housekeeping.tasks.find(t=>t.id===b.dataset.hkedit));
+  });
+  document.querySelectorAll('[data-hkarea]').forEach(el=>el.onclick = ()=>{
+    hkOpenArea = (hkOpenArea === el.dataset.hkarea) ? null : el.dataset.hkarea;
+    render();
+  });
+  document.querySelectorAll('[data-hkaddtask]').forEach(b=>b.onclick = e=>{
+    e.stopPropagation();
+    hkTaskModal(null, b.dataset.hkaddtask);
+  });
+  document.querySelectorAll('[data-hkeditarea]').forEach(b=>b.onclick = ()=>hkAreaModal(hkAreaById(b.dataset.hkeditarea)));
+  document.querySelectorAll('[data-hkdeltask]').forEach(b=>b.onclick = ()=>requireUnlock(()=>{
+    state.housekeeping.tasks = state.housekeeping.tasks.filter(t=>t.id!==b.dataset.hkdeltask);
+    saveState(); render();
+  }));
+  document.querySelectorAll('[data-hkdelarea]').forEach(b=>b.onclick = ()=>requireUnlock(()=>{
+    const id = b.dataset.hkdelarea;
+    const area = hkAreaById(id);
+    const count = state.housekeeping.tasks.filter(t=>t.areaId===id).length;
+    if(!confirm(`Delete "${area? area.name : 'this area'}" and its ${count} job${count===1?'':'s'}?`)) return;
+    state.housekeeping.areas = state.housekeeping.areas.filter(a=>a.id!==id);
+    state.housekeeping.tasks = state.housekeeping.tasks.filter(t=>t.areaId!==id);
+    if(hkOpenArea === id) hkOpenArea = null;
+    saveState(); render();
+  }));
+  const hkAddArea = document.getElementById('hkAddArea');
+  if(hkAddArea) hkAddArea.onclick = ()=>hkAreaModal(null);
+  const hkResetPlan = document.getElementById('hkResetPlan');
+  if(hkResetPlan) hkResetPlan.onclick = ()=>requireUnlock(()=>{
+    if(!confirm('Replace the current areas and jobs with the standard plan? Everything you have set up here is lost.')) return;
+    state.housekeeping = defaultHousekeeping();
+    hkOpenArea = null;
+    saveState(); render();
+    toast('Standard cleaning plan restored 🧹', 'success');
   });
 
   // Settings
@@ -5515,6 +7137,23 @@ function attachHandlers(){
     toast(`Sleep mode: ${sleepLabel(state.sleepAfterMin).toLowerCase()}.`, 'success');
   };
 
+  // Weather, screensaver photos, smart import
+  const weatherSetBtn = document.getElementById('weatherSetBtn');
+  if(weatherSetBtn) weatherSetBtn.onclick = weatherModal;
+  const photoFileInput = document.getElementById('photoFileInput');
+  if(photoFileInput) photoFileInput.onchange = ()=>addPhotoFiles(photoFileInput.files);
+  document.querySelectorAll('[data-delphoto]').forEach(b=>b.onclick = ()=>removePhoto(b.dataset.delphoto));
+  const ssPhotosOn = document.getElementById('ssPhotosOn');
+  if(ssPhotosOn) ssPhotosOn.onchange = ()=>{ state.screensaver.photos = ssPhotosOn.checked; saveState(); };
+  const ssShowClock = document.getElementById('ssShowClock');
+  if(ssShowClock) ssShowClock.onchange = ()=>{ state.screensaver.showClock = ssShowClock.checked; saveState(); };
+  const ssSecondsSel = document.getElementById('ssSecondsSel');
+  if(ssSecondsSel) ssSecondsSel.onchange = ()=>{ state.screensaver.seconds = Number(ssSecondsSel.value); saveState(); };
+  const aiKeyBtn = document.getElementById('aiKeyBtn');
+  if(aiKeyBtn) aiKeyBtn.onclick = ()=>aiKeyModal();
+  const settingsSmartImport = document.getElementById('settingsSmartImport');
+  if(settingsSmartImport) settingsSmartImport.onclick = ()=>smartImportModal('auto');
+
   // Checked items
   const autoRemove = document.getElementById('autoRemoveChecked');
   if(autoRemove) autoRemove.onchange = ()=>{
@@ -5545,6 +7184,13 @@ function shiftCal(dir){
     resetIdleTimer();
     initGoogleSync();
     initCloudSync();
+    refreshWeather();
+    /* The Home screen shows a live clock, so nudge it once a minute. */
+    setInterval(()=>{
+      const el = document.getElementById('dashClock');
+      if(el) el.textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', hour12: !use24h()});
+    }, 30000);
+    setInterval(()=>refreshWeather(), WX_TTL_MS);
   }catch(err){
     console.error('Startup failed:', err);
     document.getElementById('mainContent').innerHTML = `<div class="card"><div class="empty">
