@@ -5291,7 +5291,119 @@ revoke all on function family_hub_get(text) from public;
 revoke all on function family_hub_put(text, text, bigint, text) from public;
 grant execute on function family_hub_meta(text) to anon, authenticated;
 grant execute on function family_hub_get(text) to anon, authenticated;
-grant execute on function family_hub_put(text, text, bigint, text) to anon, authenticated;`;
+grant execute on function family_hub_put(text, text, bigint, text) to anon, authenticated;
+
+-- Apple Reminders bridge. A Shortcut on a phone can post one item at a time
+-- without being handed the whole board: this adds, and only adds. It cannot
+-- read anything back, cannot edit and cannot delete, and it quietly ignores
+-- anything already on the list, so a Shortcut is safe to run on a schedule.
+create or replace function family_hub_add(
+  fid       text,
+  kind      text,
+  item_name text,
+  list_name text default null,
+  note      text default '',
+  due       text default ''
+)
+returns text
+language plpgsql security definer set search_path = public as $$
+declare
+  doc     jsonb;
+  arr     jsonb;
+  clean   text;
+  lname   text;
+  duedate text;
+  newid   text;
+  lid     text;
+  pids    jsonb;
+begin
+  if fid is null or length(fid) < 12 then
+    raise exception 'family id is too short to be safe';
+  end if;
+  if kind is null or kind not in ('grocery','todo') then
+    raise exception 'kind must be grocery or todo';
+  end if;
+
+  clean := left(btrim(coalesce(item_name, '')), 200);
+  if clean = '' then return 'skipped'; end if;
+
+  select payload::jsonb into doc from family_hub_state where family_id = fid for update;
+  if doc is null then return 'no-family'; end if;
+
+  newid := substr(md5(random()::text || clock_timestamp()::text), 1, 7);
+
+  if kind = 'grocery' then
+    if doc->'meals' is null then doc := jsonb_set(doc, '{meals}', '{}'::jsonb); end if;
+    arr := coalesce(doc#>'{meals,grocery}', '[]'::jsonb);
+
+    if exists (
+      select 1 from jsonb_array_elements(arr) g
+       where lower(btrim(g->>'name')) = lower(clean)
+         and coalesce((g->>'done')::boolean, false) = false
+    ) then return 'already-there'; end if;
+
+    -- No aisle here on purpose: the app sorts unfiled items when it loads them.
+    doc := jsonb_set(doc, '{meals,grocery}', arr || jsonb_build_object(
+      'id', newid, 'name', clean, 'qty', '',
+      'note', left(btrim(coalesce(note, '')), 300),
+      'done', false, 'order', jsonb_array_length(arr)
+    ));
+
+  else
+    if doc->'todos' is null then
+      doc := jsonb_set(doc, '{todos}', '{"lists":[],"sections":[],"items":[]}'::jsonb);
+    end if;
+    if doc#>'{todos,lists}' is null then doc := jsonb_set(doc, '{todos,lists}', '[]'::jsonb); end if;
+
+    lname := left(btrim(coalesce(list_name, '')), 60);
+    if lname = '' then lname := 'Reminders'; end if;
+
+    select l->>'id' into lid
+      from jsonb_array_elements(doc#>'{todos,lists}') l
+     where lower(btrim(l->>'name')) = lower(lname)
+     limit 1;
+
+    if lid is null then
+      lid := 'l' || substr(md5(random()::text || clock_timestamp()::text), 1, 6);
+      doc := jsonb_set(doc, '{todos,lists}', (doc#>'{todos,lists}') || jsonb_build_object(
+        'id', lid, 'name', lname, 'color', '#8A8F98', 'emoji', '📌'
+      ));
+    end if;
+
+    -- A list named after somebody in the family belongs to them.
+    select jsonb_agg(p->>'id') into pids
+      from jsonb_array_elements(coalesce(doc->'people', '[]'::jsonb)) p
+     where lower(btrim(p->>'name')) = lower(lname);
+
+    duedate := left(btrim(coalesce(due, '')), 10);
+    if duedate !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' then duedate := ''; end if;
+
+    arr := coalesce(doc#>'{todos,items}', '[]'::jsonb);
+    if exists (
+      select 1 from jsonb_array_elements(arr) t
+       where lower(btrim(t->>'title')) = lower(clean)
+         and coalesce((t->>'done')::boolean, false) = false
+         and t->>'listId' = lid
+    ) then return 'already-there'; end if;
+
+    doc := jsonb_set(doc, '{todos,items}', arr || jsonb_build_object(
+      'id', newid, 'listId', lid, 'sectionId', null, 'title', clean,
+      'notes', left(btrim(coalesce(note, '')), 500), 'due', duedate,
+      'priority', 0, 'flagged', false, 'personIds', coalesce(pids, '[]'::jsonb),
+      'points', 0, 'parentId', null, 'attachments', '[]'::jsonb,
+      'done', false, 'awardedTo', null, 'order', jsonb_array_length(arr)
+    ));
+  end if;
+
+  update family_hub_state
+     set payload = doc::text, rev = rev + 1, updated_by = 'reminders', updated_at = now()
+   where family_id = fid;
+  return 'added';
+end;
+$$;
+
+revoke all on function family_hub_add(text, text, text, text, text, text) from public;
+grant execute on function family_hub_add(text, text, text, text, text, text) to anon, authenticated;`;
 
 let cloudFormOpen = false;
 let codeFormOpen = false;
