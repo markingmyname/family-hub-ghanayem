@@ -5297,13 +5297,15 @@ grant execute on function family_hub_put(text, text, bigint, text) to anon, auth
 -- without being handed the whole board: this adds, and only adds. It cannot
 -- read anything back, cannot edit and cannot delete, and it quietly ignores
 -- anything already on the list, so a Shortcut is safe to run on a schedule.
+drop function if exists family_hub_add(text, text, text, text, text, text);
 create or replace function family_hub_add(
   fid       text,
   kind      text,
   item_name text,
   list_name text default null,
   note      text default '',
-  due       text default ''
+  due       text default '',
+  assign_to text default ''
 )
 returns text
 language plpgsql security definer set search_path = public as $$
@@ -5312,6 +5314,7 @@ declare
   arr     jsonb;
   clean   text;
   lname   text;
+  who     text;
   duedate text;
   newid   text;
   lid     text;
@@ -5370,10 +5373,14 @@ begin
       ));
     end if;
 
-    -- A list named after somebody in the family belongs to them.
+    -- Whoever the list belongs to. A Reminders list rarely carries the same
+    -- name as the person on the board (Katie's list, Mom's column), so the
+    -- Shortcut can name them outright; the list name is only the fallback.
+    who := left(btrim(coalesce(assign_to, '')), 60);
+    if who = '' then who := lname; end if;
     select jsonb_agg(p->>'id') into pids
       from jsonb_array_elements(coalesce(doc->'people', '[]'::jsonb)) p
-     where lower(btrim(p->>'name')) = lower(lname);
+     where lower(btrim(p->>'name')) = lower(who) or p->>'id' = who;
 
     duedate := left(btrim(coalesce(due, '')), 10);
     if duedate !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' then duedate := ''; end if;
@@ -5402,8 +5409,8 @@ begin
 end;
 $$;
 
-revoke all on function family_hub_add(text, text, text, text, text, text) from public;
-grant execute on function family_hub_add(text, text, text, text, text, text) to anon, authenticated;`;
+revoke all on function family_hub_add(text, text, text, text, text, text, text) from public;
+grant execute on function family_hub_add(text, text, text, text, text, text, text) to anon, authenticated;`;
 
 let cloudFormOpen = false;
 let codeFormOpen = false;
