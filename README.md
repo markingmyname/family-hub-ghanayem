@@ -149,7 +149,7 @@ A **secret** or **service role** key is refused outright if anyone tries to past
 
 ### What syncing does and doesn't do
 
-- **Everything shared syncs** — calendar, chores, to-dos, habits, points, rewards, budget, meals, people, settings.
+- **Everything shared syncs** — calendar, cleaning jobs, to-dos, habits, points, rewards, meals, people, settings.
 - **What each screen is looking at stays put.** The day you're on, the list you've opened, the person whose habits you're viewing — those are yours. Otherwise every screen in the house would jump to wherever someone else just tapped.
 - **Last change wins.** The whole board is saved as one document, so if two people edit in the same few seconds, the later save is the one kept. Rare in a household, and the alternative is a lot of machinery for a fridge-door app.
 - **Offline still works.** Edits save locally and go up when the connection returns; the ☁️ in the header shows what's happening.
@@ -161,15 +161,56 @@ Prefer to run it on Azure? Azure Database for PostgreSQL can't be reached from a
 
 ---
 
+## Apple Reminders → Family Hub
+
+You can have things you dictate to Siri, or jot into Reminders, land on the family board — groceries into the grocery list, and a personal Reminders list into its own to-do list.
+
+**It goes one way: Reminders into Family Hub.** Apple publishes no web API for Reminders — [EventKit](https://developer.apple.com/documentation/eventkit) is an on-device framework for native apps, and [app-specific passwords](https://support.apple.com/en-us/102654) cover Mail, Calendar, and Contacts but not Reminders. So the bridge is a **Shortcut** on your phone: it reads Reminders locally, where that's allowed, and posts each one to the family board.
+
+Nothing is read back out, nothing is edited, and nothing is deleted. Adding the same thing twice does nothing, so the Shortcut is safe to run on a schedule.
+
+### Before you start
+
+Run the setup SQL again from **Settings → Family sync → Copy SQL**. It's the same script with one function added, and re-running it is safe.
+
+You'll need three things from that same panel: the **project URL**, the **publishable key**, and your **family code**.
+
+### Building the Shortcut
+
+In the Shortcuts app, make a new shortcut and add:
+
+1. **Find Reminders** — set the filter to *List is Groceries* and *Is Completed is false*.
+2. **Repeat with Each** — pass it the reminders you just found.
+3. Inside the repeat, **Get Contents of URL**:
+   - **URL** — `<your project URL>/rest/v1/rpc/family_hub_add`
+   - **Method** — POST
+   - **Headers** — `apikey` set to the publishable key, and `Content-Type` set to `application/json`
+   - **Request Body** — JSON, with three text fields: `fid` (your family code), `kind` (`grocery`), and `item_name` (tap the *Repeat Item* variable and change it to **Name**)
+4. **Mark as Completed** — pass it the *Repeat Item*.
+
+That last step is what makes this pleasant. The reminder hands itself over: you say it to Siri, it appears on the family board, and it's ticked off in Reminders. Leave that step out and the item stays in both places — which means anything you tick off in Family Hub comes back on the next run, because as far as Reminders is concerned it's still outstanding.
+
+To run it without lifting a finger: **Automation → New → Time of Day**, pick a time, and turn off *Ask Before Running*.
+
+### The same thing for to-dos
+
+Duplicate the shortcut and change two things: the list in **Find Reminders**, and `kind` from `grocery` to `todo`. Then add a fourth body field, `list_name`, with that list's name.
+
+A to-do list of the same name is made on the board the first time it runs. If somebody in the family shares that name, their to-dos are assigned to them automatically — so a Reminders list called *Katie* becomes Katie's list, with her colour on every item.
+
+Two optional body fields if you want them: `note` (map it to the reminder's *Notes*) and `due`, which has to be formatted `YYYY-MM-DD`.
+
+---
+
 ## Security and reliability
 
 **Security**
 
 - A Content Security Policy restricts where code can load from and where data can be sent
-- The parental PIN is stored **hashed (SHA-256)**, not in plain text
 - All user-entered text is HTML-escaped before display
 - Access tokens live only in the browser session and vanish when the tab closes; the Client IDs are not secrets
 - The sync database is reachable only through functions that require the family ID — the publishable key on its own opens nothing, and admin-level keys are rejected
+- The Reminders bridge can only add items. It can't read the board back, edit anything, or delete anything
 - Uploaded images are validated and re-encoded before saving
 
 **Error handling**
