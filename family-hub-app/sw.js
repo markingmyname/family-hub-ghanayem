@@ -1,9 +1,9 @@
 // Family Hub — minimal service worker.
 // This just lets the browser "install" the app and cache the shell for fast loading.
-// It intentionally does NOT cache data — your calendar/chores/etc. always come fresh
+// It intentionally does NOT cache data — your calendar/to-dos/etc. always come fresh
 // from shared storage so every device stays in sync.
 
-const CACHE_NAME = 'family-hub-shell-v1';
+const CACHE_NAME = 'family-hub-shell-v2';
 const SHELL_FILES = ['./index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (event) => {
