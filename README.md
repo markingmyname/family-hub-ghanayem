@@ -194,11 +194,20 @@ To run it without lifting a finger: **Automation → New → Time of Day**, pick
 
 ### The same thing for to-dos
 
-Duplicate the shortcut and change two things: the list in **Find Reminders**, and `kind` from `grocery` to `todo`. Then add a fourth body field, `list_name`, with that list's name.
+Duplicate the shortcut and change two things: the list in **Find Reminders**, and `kind` from `grocery` to `todo`. Then add a fourth body field, `list_name`.
 
-A to-do list of the same name is made on the board the first time it runs. If somebody in the family shares that name, their to-dos are assigned to them automatically — so a Reminders list called *Katie* becomes Katie's list, with her colour on every item.
+Your Reminders lists are named after people, but the board calls those people Mom and Dad — so `list_name` is where you translate:
 
-Two optional body fields if you want them: `note` (map it to the reminder's *Notes*) and `due`, which has to be formatted `YYYY-MM-DD`.
+| Reminders list | `list_name` | Lands as |
+|---|---|---|
+| Katie | `Mom` | Mom's to-dos, in her colour |
+| Mark | `Dad` | Dad's to-dos, in his colour |
+
+The to-do list is created on the board the first time it runs, and because the name matches somebody in the family, every item is assigned to them automatically.
+
+If you'd rather the board show the list under its Reminders name, keep `list_name` as *Katie* and add a fifth field, `assign_to`, set to `Mom`. The list keeps her name; the items still belong to Mom.
+
+Two more optional fields: `note` (map it to the reminder's *Notes*) and `due`, which has to be formatted `YYYY-MM-DD`.
 
 ---
 
