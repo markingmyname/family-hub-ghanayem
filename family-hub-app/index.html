@@ -80,7 +80,10 @@
     padding:10px 14px; border-radius:10px 10px 0 0; cursor:pointer; white-space:nowrap;
     border-bottom:3px solid transparent;
   }
-  nav.tabs button.active{color:#fff; background:var(--paper-2); border-bottom:3px solid var(--mustard);}
+  /* The selected tab sits on the peach page colour, not the dark header, so its
+     label takes the dark ink colour. White here left the current tab almost
+     unreadable — the one label that most needs to stand out. */
+  nav.tabs button.active{color:var(--ink); background:var(--paper-2); border-bottom:3px solid var(--mustard);}
 
   main{flex:1; padding:16px; max-width:1100px; margin:0 auto; width:100%;}
   .card{background:var(--paper); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); padding:16px;}
@@ -608,6 +611,7 @@
       <h1>🏡 Family Hub</h1>
     </div>
     <div class="header-actions">
+      <button class="icon-btn" id="accountBtn" title="Sign in with Google">👤</button>
       <button class="icon-btn" id="cloudBtn" title="Family sync" style="opacity:0.45;">☁️</button>
       <button class="icon-btn" id="screensaverBtn" title="Screensaver">🌙</button>
       <button class="icon-btn" id="settingsBtn" title="Settings">⚙️</button>
@@ -722,6 +726,7 @@ function defaultState(){
     syncAssignTo: '',
     habitMonth: monthStr(new Date()),
     habitPersonId: 'p1',
+    hkWho: '',
     timeFormat: '12h',
     timeZones: { secondaryEnabled:false, primary:'', secondary:'Europe/London', primaryLabel:'', secondaryLabel:'' },
     sleepAfterMin: 15,
@@ -1069,6 +1074,17 @@ function migrateState(s){
   if(typeof s.screensaver.seconds !== 'number') s.screensaver.seconds = 15;
   if(typeof s.screensaver.photos !== 'boolean') s.screensaver.photos = true;
   if(typeof s.screensaver.showClock !== 'boolean') s.screensaver.showClock = true;
+  /* "Doing it" in Housekeeping moved out of its own localStorage key and into
+     the personal settings, so it can follow whoever signed in. */
+  if(typeof s.hkWho !== 'string'){
+    let legacy = '';
+    try{ legacy = localStorage.getItem(HK_WHO_KEY) || ''; }catch(e){ /* no storage — start empty */ }
+    s.hkWho = legacy;
+  }
+  /* Personal settings can now arrive from another device, so the calendar's
+     view and date are checked like everything else rather than trusted. */
+  if(!['month','week','day'].includes(s.calView)) s.calView = 'month';
+  if(typeof s.calDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s.calDate)) s.calDate = todayStr();
   /* Grocery items grew a category, quantity and note once the list started
      looking like Reminders. Older rows only had a name and a checkbox. */
   if(!s.meals) s.meals = { plan:{}, recipes:[], pantry:[], grocery:[] };
@@ -1129,19 +1145,27 @@ async function saveState(){
         console.error('Save failed', e);
         toast('Couldn\'t save your last change. Check connection/space and try again.', 'error');
       }
-      if(!cloudSync.applyingRemote) cloudSync.queuePush();
+      /* Both check for real changes first: the board goes up only when the
+         family's data changed, personal settings only when they did. That is
+         also what stops a copy that just came down from being echoed back up. */
+      cloudSync.queuePush();
+      mySettings.queuePush();
       resolve();
     }, 250);
   });
 }
 
-/* Saves to this device WITHOUT sending the result back up. Used when the copy
-   we just wrote came down from the cloud in the first place — pushing it again
-   would be an echo, and each echo would bump the revision for everyone else. */
+/* Saves to this device WITHOUT sending anything up. Used when the copy came
+   from the cloud in the first place. Writes straight away rather than through
+   saveState's 250 ms debounce: waiting on that debounce used to hang whenever
+   another save landed inside the window (the debounce restarts and the first
+   waiter is never resolved), which left this device quietly not syncing. */
 async function saveLocalOnly(){
-  cloudSync.applyingRemote = true;
-  try{ await saveState(); }
-  finally{ cloudSync.applyingRemote = false; }
+  try{ await storageAdapter.set(STORAGE_KEY, JSON.stringify(state), true); }
+  catch(e){
+    console.error('Save failed', e);
+    toast('Couldn\'t save the latest family changes on this device. Check storage space.', 'error');
+  }
 }
 
 /* ======================= CROSS-DEVICE FAMILY SYNC =======================
@@ -1176,10 +1200,15 @@ const CLOUD_PROMPTED_KEY = 'fh-cloud-prompted';
 const CLOUD_POLL_MS    = 8000;   // how often a visible tab checks for news
 const CLOUD_PUSH_MS    = 700;    // debounce, so a burst of edits is one write
 
-/* What stays on the device holding the screen. Syncing these would drag every
-   other screen in the house to whatever day, list or person this one happens to
-   be looking at — maddening rather than helpful. */
-const DEVICE_LOCAL_KEYS = ['calView','calDate','calFilter','habitMonth','habitPersonId','todoView','completedOpen'];
+/* Each person's own settings — where they are in the app and how they like it.
+   These never go into the family board, so one person's choices can't drag
+   anyone else's screen along. Signed in, they follow that person to every
+   device they sign in on (mySettings, below); signed out, they stay on this
+   device. */
+const PERSONAL_KEYS = [
+  'calView','calDate','calFilter','habitMonth','habitPersonId','todoView','completedOpen','hkWho',
+  'timeFormat','timeZones','sleepAfterMin','weather','screensaver','autoRemoveChecked'
+];
 
 /* This household's own project, prefilled so setting up the next phone is one
    tap rather than a hunt through a dashboard. Both values are the public pair:
@@ -1354,36 +1383,264 @@ function cloudSqlEditorUrl(url){
   return ref ? `https://supabase.com/dashboard/project/${ref}/sql` : 'https://supabase.com/dashboard/project/_/sql';
 }
 
-/* Everything except the view-only keys — that's what goes in the row. */
+/* Everything except each person's own settings — that's what goes in the row. */
 function cloudPayload(){
   const copy = {};
-  Object.keys(state).forEach(k=>{ if(!DEVICE_LOCAL_KEYS.includes(k)) copy[k] = state[k]; });
+  Object.keys(state).forEach(k=>{ if(!PERSONAL_KEYS.includes(k)) copy[k] = state[k]; });
   return JSON.stringify(copy);
 }
 
-function cloudErrorMessage(status, body){
+/* `fn` is the database function that was called. The sign-in ones (fh_*) raise
+   plain-English reasons, so those are passed straight through. */
+function cloudErrorMessage(status, body, fn){
   const text = (body||'').toLowerCase();
+  const signIn = /^fh_/.test(fn || '');
+  if(status === 404 || text.includes('schema cache') || text.includes('could not find the function'))
+    return signIn
+      ? 'The Google sign-in part of the setup SQL hasn\'t run on this project yet — open Family sync, press Copy SQL, paste it into the SQL editor and press Run.'
+      : 'The setup SQL hasn\'t run on this project yet — press Copy SQL, open the SQL editor, press Run, then try again.';
+  if(signIn && status >= 400 && status < 500){
+    let reason = '';
+    try{ reason = JSON.parse(body).message || ''; }catch(e){}
+    if(status === 401 && !reason) return 'Your sign-in was rejected. Sign out and sign in again.';
+    if(reason) return reason.charAt(0).toUpperCase() + reason.slice(1) + '.';
+  }
   if(status === 401 || status === 403)
     return 'That key was rejected. Copy the publishable (or anon) key again — and check the setup SQL ran.';
-  if(status === 404 || text.includes('schema cache') || text.includes('could not find the function'))
-    return 'The setup SQL hasn\'t run on this project yet — press Copy SQL, open the SQL editor, press Run, then try again.';
   if(status === 413) return 'The family copy is too large to send. Try smaller profile photos or fewer attachments.';
   if(status >= 500) return 'The cloud database had a server error. It usually clears on its own.';
   return `The cloud database replied ${status}.`;
 }
 
+/* ======================= GOOGLE SIGN-IN (Supabase Auth) =======================
+   Each family member signs in with their own Google account. The account
+   decides which family board this device opens (family_hub_members on the
+   server) and whose personal settings it shows (family_hub_settings).
+
+   OAuth with PKCE, straight against Supabase Auth's REST API, so the app keeps
+   its no-dependencies, works-offline shape:
+     1. signIn() makes a random verifier, keeps it on this device, and sends the
+        browser to Supabase's /authorize with only the verifier's SHA-256 hash.
+     2. Google signs the person in, and Supabase sends the browser back to this
+        page with a one-time ?code=.
+     3. finishRedirect() trades code + verifier for a session at
+        /token?grant_type=pkce. The code is useless without the verifier, which
+        never left this device.
+   The session lives in localStorage: an access token good for about an hour,
+   renewed with the refresh token shortly before it runs out.
+
+   Depends on: the Supabase project from cloudProject() (DEFAULT_CLOUD_URL/KEY
+   unless changed on the sync panel); Google switched on under Authentication →
+   Sign In / Providers in that project; this page's address on the project's
+   Redirect URLs list; the Google sign-in part of CLOUD_SETUP_SQL. The Content
+   Security Policy already allows https://*.supabase.co. */
+const AUTH_SESSION_KEY  = 'fh-auth-session';
+const AUTH_VERIFIER_KEY = 'fh-auth-verifier';
+const AUTH_ACCOUNT_KEY  = 'fh-auth-account';   // last known family for the signed-in account, for offline starts
+const AUTH_RENEW_EARLY_S = 120;                // renew the access token this long before it expires
+
+/* The Supabase project this copy talks to: the one saved on the sync panel, or
+   the household default. Works whether or not a family code is saved. */
+function cloudProject(){
+  try{
+    const raw = JSON.parse(localStorage.getItem(CLOUD_CONFIG_KEY) || 'null');
+    if(raw && raw.url && raw.key) return { url: raw.url, key: raw.key };
+  }catch(e){ /* unreadable — fall back to the household project */ }
+  return { url: DEFAULT_CLOUD_URL, key: DEFAULT_CLOUD_KEY };
+}
+
+/* Where Supabase sends the browser back: this page, minus any query or hash.
+   Must be on the project's Redirect URLs list, or Supabase falls back to the
+   project's Site URL. */
+function authReturnUrl(){ return location.origin + location.pathname; }
+
+function base64Url(bytes){
+  let bin = '';
+  bytes.forEach(b=>{ bin += String.fromCharCode(b); });
+  return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+
+const auth = {
+  session: null,       // { access_token, refresh_token, expires_at (unix seconds), user: { id, email } } or null
+  _renewing: null,     // the in-flight renewal, shared so two callers never spend the same refresh token
+
+  load(){
+    try{
+      const s = JSON.parse(localStorage.getItem(AUTH_SESSION_KEY) || 'null');
+      this.session = (s && s.access_token && s.refresh_token && s.user && s.user.id) ? s : null;
+    }catch(e){ this.session = null; }
+  },
+
+  /* Keep only what the app uses. The token response also carries the full user
+     record and Google's own tokens, which have no reason to sit on disk. */
+  _store(data){
+    const now = Math.round(Date.now()/1000);
+    const next = {
+      access_token: data && data.access_token,
+      refresh_token: data && data.refresh_token,
+      expires_at: Number(data && data.expires_at) || (now + (Number(data && data.expires_in) || 3600)),
+      user: { id: data && data.user && data.user.id, email: String((data && data.user && data.user.email) || '').toLowerCase() }
+    };
+    if(!next.access_token || !next.refresh_token || !next.user.id){
+      throw new Error('Sign-in came back incomplete. Try again.');
+    }
+    this.session = next;
+    try{ localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(next)); }
+    catch(e){ throw new Error('This browser wouldn\'t save the sign-in (private mode blocks storage).'); }
+  },
+  _forget(){
+    this.session = null;
+    try{ localStorage.removeItem(AUTH_SESSION_KEY); }catch(e){}
+  },
+
+  isSignedIn(){ return !!this.session; },
+  email(){ return this.session ? this.session.user.email : ''; },
+  userId(){ return this.session ? this.session.user.id : ''; },
+
+  /* POST to Supabase Auth. Network failure is marked `offline` so callers can
+     keep the session; an HTTP error carries its status. */
+  async _post(path, body, extraHeaders){
+    const { url, key } = cloudProject();
+    let res;
+    try{
+      res = await fetch(url + '/auth/v1' + path, {
+        method: 'POST',
+        headers: Object.assign({ apikey: key, 'Content-Type': 'application/json' }, extraHeaders || {}),
+        body: JSON.stringify(body || {})
+      });
+    }catch(e){
+      const err = new Error('No connection to the sign-in service right now.');
+      err.offline = true;
+      throw err;
+    }
+    const text = await res.text();
+    let data = null;
+    try{ data = text ? JSON.parse(text) : null; }catch(e){ /* not JSON — handled below */ }
+    if(!res.ok){
+      const err = new Error((data && (data.error_description || data.msg || data.message)) || `The sign-in service replied ${res.status}.`);
+      err.status = res.status;
+      throw err;
+    }
+    return data;
+  },
+
+  /* Step 1: off to Google. The page unloads at the end of this. */
+  async signIn(){
+    if(!(window.crypto && crypto.subtle && crypto.getRandomValues)){
+      throw new Error('This browser can\'t do secure sign-in here — it needs the app\'s https address.');
+    }
+    const raw = new Uint8Array(32);
+    crypto.getRandomValues(raw);
+    const verifier = base64Url(raw);    // 43 characters, inside PKCE's 43–128 limit
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
+    try{ localStorage.setItem(AUTH_VERIFIER_KEY, verifier); }
+    catch(e){ throw new Error('This browser wouldn\'t save the sign-in (private mode blocks storage).'); }
+    const { url } = cloudProject();
+    const q = new URLSearchParams({
+      provider: 'google',
+      redirect_to: authReturnUrl(),
+      code_challenge: base64Url(digest),
+      code_challenge_method: 's256'
+    });
+    location.assign(`${url}/auth/v1/authorize?${q.toString()}`);
+  },
+
+  /* Step 3: back from Google. Returns 'signed-in', or 'none' when the address
+     holds no sign-in; throws with a readable reason otherwise. The code is
+     cleared from the address bar first, so a refresh can't replay it and it
+     doesn't sit in history. */
+  async finishRedirect(){
+    const query = new URLSearchParams(location.search);
+    const hash = new URLSearchParams((location.hash || '').replace(/^#/, ''));
+    const code = query.get('code');
+    const error = query.get('error_description') || query.get('error') || hash.get('error_description') || hash.get('error');
+    if(!code && !error) return 'none';
+    history.replaceState(null, '', location.pathname);
+    let verifier = null;
+    try{ verifier = localStorage.getItem(AUTH_VERIFIER_KEY); localStorage.removeItem(AUTH_VERIFIER_KEY); }catch(e){}
+    if(error) throw new Error('Google sign-in didn\'t finish: ' + error);
+    if(!verifier) throw new Error('Sign-in finished in a different browser or app than it started in. Tap Sign in again from here.');
+    this._store(await this._post('/token?grant_type=pkce', { auth_code: code, code_verifier: verifier }));
+    return 'signed-in';
+  },
+
+  /* A usable access token, renewed first when it's about to run out. Offline,
+     the session is kept for later. Rejected — revoked, expired, or the account
+     was deleted — the device is signed out and the error says so. */
+  async accessToken(){
+    if(!this.session) throw new Error('Not signed in.');
+    const now = Math.round(Date.now()/1000);
+    if(this.session.expires_at - now > AUTH_RENEW_EARLY_S) return this.session.access_token;
+    if(!this._renewing){
+      this._renewing = (async ()=>{
+        try{
+          this._store(await this._post('/token?grant_type=refresh_token', { refresh_token: this.session.refresh_token }));
+        }catch(err){
+          if(!err.offline && err.status >= 400 && err.status < 500){
+            this._forget();
+            err.signedOut = true;
+            err.message = 'Your sign-in has expired. Sign in again.';
+          }
+          throw err;
+        }finally{
+          this._renewing = null;
+        }
+      })();
+    }
+    await this._renewing;
+    return this.session.access_token;
+  },
+
+  /* Signs this device out. The server call revokes this device's session; if it
+     can't be reached, the device is signed out locally anyway. */
+  async signOut(){
+    const token = this.session && this.session.access_token;
+    this._forget();
+    if(!token) return;
+    try{ await this._post('/logout?scope=local', {}, { Authorization: 'Bearer ' + token }); }
+    catch(e){ console.warn('Sign-out request failed; signed out on this device anyway.', e.message); }
+  }
+};
+
+/* The last family this account opened, so a signed-in device that starts with
+   no connection still knows whose board it is showing. */
+function readCachedAccount(){
+  try{ return JSON.parse(localStorage.getItem(AUTH_ACCOUNT_KEY) || 'null'); }catch(e){ return null; }
+}
+function writeCachedAccount(acct){
+  try{ localStorage.setItem(AUTH_ACCOUNT_KEY, JSON.stringify(acct)); }catch(e){ /* only costs an offline start */ }
+}
+function forgetCachedAccount(){ try{ localStorage.removeItem(AUTH_ACCOUNT_KEY); }catch(e){} }
+
 const cloudSync = {
   status: 'off',        // off | connecting | live | offline | error
+  /* Who is signed in on this device, and what that opens. Exactly one of:
+       { kind:'signed-out' }
+       { kind:'checking', detail }   signed in, family list not reachable yet
+       { kind:'no-family' }          signed in, not on any family's list
+       { kind:'member', familyId, personId, email }
+     mode() derives from this, so the two can never disagree. */
+  account: { kind: 'signed-out' },
+  members: null,        // the family's list (fh_members) while the sync panel shows it
+  lastPushedBody: null, // the board as last sent or received, so unchanged saves send nothing
   detail: '',
   rev: 0,               // highest revision this device has seen
   lastSyncAt: 0,
   pendingPush: false,   // an edit that hasn't reached the cloud yet
-  applyingRemote: false,
   _pollTimer: null,
   _pushTimer: null,
   _busy: false,
 
-  isOn(){ return !!cloudConfig(); },
+  /* How this device reaches the family board:
+       'member' — signed in with Google and on the family's list (the secure way)
+       'code'   — the older shared family code, kept working until everyone has
+                  signed in and the lockdown SQL has run
+       'off'    — this device only */
+  mode(){
+    if(this.account.kind === 'member') return 'member';
+    return cloudConfig() ? 'code' : 'off';
+  },
+  isOn(){ return this.mode() !== 'off'; },
 
   setStatus(status, detail){
     this.status = status;
@@ -1392,33 +1649,36 @@ const cloudSync = {
     renderCloudBlock();          // no-op unless the sync panel happens to be open
   },
 
-  _headers(cfg, extra){
-    /* Legacy anon keys are JWTs and belong in both headers. The newer
-       publishable keys are not JWTs, and Supabase rejects them when they turn
-       up as a bearer token — those go in `apikey` alone. */
-    const headers = { apikey: cfg.key };
-    if(/^eyJ/.test(cfg.key)) headers.Authorization = `Bearer ${cfg.key}`;
-    return Object.assign(headers, extra || {});
-  },
-
-  /* Every call goes through a database function rather than at the table.
-     The table itself is unreachable with this key, so knowing the key is not
-     enough — you also have to know the family id, and there is no query that
-     will list those for you. That id lives only on the household's devices and
-     inside the setup links they send each other. */
+  /* Every call goes through a database function rather than at a table; the
+     tables themselves are unreachable with the public key. The fh_* functions
+     act for the signed-in person, so they carry that person's access token and
+     work out the family from it. The older family_hub_* functions carry only
+     the key and demand the family code — the one thing standing between a
+     visitor and the board, which is why Google sign-in replaces them. */
   async _rpc(fn, args){
-    const cfg = cloudConfig();
-    if(!cfg) throw new Error('Family sync isn\'t set up on this device.');
-    const res = await this._fetch(`${cfg.url}/rest/v1/rpc/${fn}`, {
-      method: 'POST',
-      headers: this._headers(cfg, { 'Content-Type':'application/json' }),
-      body: JSON.stringify(args)
-    });
+    const { url, key } = cloudProject();
+    const headers = { apikey: key, 'Content-Type': 'application/json' };
+    if(/^fh_/.test(fn)){
+      try{ headers.Authorization = 'Bearer ' + await auth.accessToken(); }
+      catch(err){
+        if(err.signedOut) this._setAccount({ kind: 'signed-out' });
+        throw err;
+      }
+    }else{
+      if(!cloudConfig()) throw new Error('Family sync isn\'t set up on this device.');
+      /* Legacy anon keys are JWTs and belong in both headers. The newer
+         publishable keys are not JWTs, and Supabase rejects them when they turn
+         up as a bearer token — those go in `apikey` alone. */
+      if(/^eyJ/.test(key)) headers.Authorization = `Bearer ${key}`;
+    }
+    const res = await this._fetch(`${url}/rest/v1/rpc/${fn}`, {
+      method: 'POST', headers, body: JSON.stringify(args || {})
+    }, fn);
     const text = await res.text();
     return text ? JSON.parse(text) : null;
   },
 
-  async _fetch(url, opts){
+  async _fetch(url, opts, fn){
     let res;
     try{ res = await fetch(url, opts); }
     catch(e){
@@ -1429,31 +1689,33 @@ const cloudSync = {
     if(!res.ok){
       let body = '';
       try{ body = await res.text(); }catch(e){}
-      throw new Error(cloudErrorMessage(res.status, body));
+      throw new Error(cloudErrorMessage(res.status, body, fn));
     }
     return res;
   },
 
   /* Just the revision marker — a few bytes, which is what makes polling cheap. */
   async fetchMeta(){
+    if(this.mode() === 'member') return ((await this._rpc('fh_meta', {})) || [])[0] || null;
     const cfg = cloudConfig(); if(!cfg) return null;
     const rows = await this._rpc('family_hub_meta', { fid: cfg.familyId });
     return (rows && rows[0]) || null;
   },
 
   async fetchRow(){
+    if(this.mode() === 'member') return ((await this._rpc('fh_get', {})) || [])[0] || null;
     const cfg = cloudConfig(); if(!cfg) return null;
     const rows = await this._rpc('family_hub_get', { fid: cfg.familyId });
     return (rows && rows[0]) || null;
   },
 
-  /* Replaces this device's copy with the family's, keeping whatever this screen
-     is currently looking at. */
+  /* Replaces this device's copy with the family's, keeping this person's own
+     settings (PERSONAL_KEYS) exactly as they are. */
   applyRemote(remote){
     const keep = {};
-    DEVICE_LOCAL_KEYS.forEach(k=>{ if(state && state[k] !== undefined) keep[k] = state[k]; });
+    PERSONAL_KEYS.forEach(k=>{ if(state && state[k] !== undefined) keep[k] = state[k]; });
     const merged = migrateState(remote);
-    DEVICE_LOCAL_KEYS.forEach(k=>{ if(keep[k] !== undefined) merged[k] = keep[k]; });
+    PERSONAL_KEYS.forEach(k=>{ if(keep[k] !== undefined) merged[k] = keep[k]; });
     if(!merged.calView) merged.calView = 'month';
     if(!merged.calDate) merged.calDate = todayStr();
     state = merged;
@@ -1480,6 +1742,12 @@ const cloudSync = {
     /* The family may have been given a new code elsewhere. The old row is left
        holding a forwarding note so every other device follows by itself. */
     if(remote && remote.__movedTo){
+      /* Signed-in members are tied to this row, and the setup SQL refuses this
+         move once a family has a list — so this only means the move happened
+         before anyone signed in. Never apply a signpost as the board. */
+      if(this.mode() === 'member'){
+        throw new Error('This family was moved to a new family code before Google sign-in was set up. Ask whoever moved it to sign in and add you again.');
+      }
       const moved = normalizeFamilyCode(remote.__movedTo);
       const cfg = cloudConfig();
       if(moved && cfg && moved !== cfg.familyId){
@@ -1494,28 +1762,34 @@ const cloudSync = {
     this.applyRemote(remote);
     this.rev = Number(row.rev) || 0;
     this.lastSyncAt = Date.now();
+    this.lastPushedBody = cloudPayload();   // this device now matches the family; nothing to send back
     this.setStatus('live');
     await saveLocalOnly();
     return 'applied';
   },
 
+  /* Returns true when this call did the round trip (sent, or tried and failed),
+     false when there was nothing to send — which is what lets tick() tell the
+     two apart. */
   async push(){
-    if(!this.isOn()) return;
-    if(this._busy){ this.pendingPush = true; return; }
-    const cfg = cloudConfig();
+    if(!this.isOn()) return false;
+    if(this._busy){ this.pendingPush = true; return false; }
+    /* Personal settings aren't in the board, so changing one leaves the board
+       as it was. Sending it anyway would bump the revision and make every other
+       device download the board and say "Updated from another device". */
+    const body = cloudPayload();
+    if(body === this.lastPushedBody){ this.pendingPush = false; return false; }
     this._busy = true;
     try{
       /* The database picks the revision number: it takes whichever is higher,
          our proposal or one past what's already stored. A device that has been
          asleep therefore can't reuse a number and confuse the others, and it
          takes one round trip instead of two to work that out. */
-      const stored = await this._rpc('family_hub_put', {
-        fid: cfg.familyId,
-        body: cloudPayload(),
-        newrev: this.rev + 1,
-        device: deviceId()
-      });
+      const stored = this.mode() === 'member'
+        ? await this._rpc('fh_put', { body, newrev: this.rev + 1, device: deviceId() })
+        : await this._rpc('family_hub_put', { fid: cloudConfig().familyId, body, newrev: this.rev + 1, device: deviceId() });
       this.rev = Number(stored) || this.rev + 1;
+      this.lastPushedBody = body;
       this.pendingPush = false;
       this.lastSyncAt = Date.now();
       this.setStatus('live');
@@ -1527,6 +1801,7 @@ const cloudSync = {
     }finally{
       this._busy = false;
     }
+    return true;
   },
 
   queuePush(){
@@ -1539,7 +1814,10 @@ const cloudSync = {
   async tick(){
     if(!this.isOn() || document.visibilityState === 'hidden') return;
     try{
-      if(this.pendingPush){ await this.push(); return; }
+      /* An edit waiting to go up goes first. If there turned out to be nothing
+         to send — only a personal setting changed — carry on and check for
+         other devices' changes, rather than skipping this round. */
+      if(this.pendingPush && await this.push()) return;
       const result = await this.pull(false);
       if(result === 'empty'){ await this.push(); return; }   // first device seeds the row
       if(result === 'applied'){
@@ -1567,9 +1845,13 @@ const cloudSync = {
      JOIN, so an empty result is a typo, not an invitation to start a rival
      family with the same data. Returns 'joined' or 'seeded'. */
   async connect(cfg, opts){
+    if(this.mode() === 'member'){
+      throw new Error('This device is signed in with Google, so your family comes from your account — no setup link or code needed.');
+    }
     this.stop();
     writeCloudConfig(cfg);
     this.rev = 0;
+    this.lastPushedBody = null;
     this.pendingPush = false;
     this.setStatus('connecting');
     try{
@@ -1599,8 +1881,119 @@ const cloudSync = {
     this.stop();
     forgetCloudConfig();
     this.rev = 0;
+    this.lastPushedBody = null;
     this.pendingPush = false;
     this.setStatus('off');
+  },
+
+  /* ---- Google sign-in ---- */
+
+  /* Startup, before the first screen draws: pick up the last known answer for
+     this account so a signed-in device doesn't flash "sign in" or start
+     offline as "this device only". resolveAccount() confirms it right after. */
+  restoreCachedAccount(){
+    if(!auth.isSignedIn()){ this.account = { kind: 'signed-out' }; return; }
+    const c = readCachedAccount();
+    this.account = (c && c.userId === auth.userId() && c.familyId)
+      ? { kind: 'member', familyId: c.familyId, personId: c.personId || '', email: c.email || auth.email() }
+      : { kind: 'checking', detail: '' };
+  },
+
+  _setAccount(next){
+    this.account = next;
+    if(next.kind === 'member'){
+      writeCachedAccount({ userId: auth.userId(), familyId: next.familyId, personId: next.personId, email: next.email });
+      /* The family code was this device's old way in. Signed in, the account
+         decides the family, so the code is retired here — otherwise signing
+         out would quietly keep this device syncing through it. The project
+         address and key stay. A code for a DIFFERENT family means this device
+         is about to be replaced by the member family's board, so keep a copy. */
+      const cfg = cloudConfig();
+      if(cfg){
+        if(cfg.familyId !== next.familyId){
+          try{ localStorage.setItem(PREJOIN_BACKUP_KEY, JSON.stringify(state)); }catch(e){ /* best effort */ }
+        }
+        writeCloudConfig({ url: cfg.url, key: cfg.key });
+      }
+    }else if(next.kind !== 'checking'){
+      forgetCachedAccount();
+    }
+    updateAccountButton();
+  },
+
+  /* Asks the server who this account is. fh_me also claims a waiting invite on
+     the first sign-in. Offline, the last known answer stands. */
+  async resolveAccount(){
+    if(!auth.isSignedIn()){ this._setAccount({ kind: 'signed-out' }); return; }
+    try{
+      const me = ((await this._rpc('fh_me', {})) || [])[0];
+      this._setAccount(me
+        ? { kind: 'member', familyId: me.family_id, personId: me.person_id || '', email: me.email }
+        : { kind: 'no-family' });
+    }catch(err){
+      if(err.signedOut || !auth.isSignedIn()){ this._setAccount({ kind: 'signed-out' }); return; }
+      if(this.account.kind !== 'member') this._setAccount({ kind: 'checking', detail: err.message });
+    }
+  },
+
+  /* After signing in, joining, or starting up: find the family, load the board
+     and this person's settings, and start checking for changes. */
+  async refreshAccount(){
+    this.stop();
+    await this.resolveAccount();
+    this.rev = 0;
+    this.lastPushedBody = null;
+    this.pendingPush = false;
+    if(!this.isOn()){ this.setStatus('off'); render(); return; }
+    this.setStatus('connecting');
+    try{
+      const result = await this.pull(false);
+      if(result === 'empty') await this.push();   // family-code mode: this device seeds the row
+    }catch(err){
+      this.setStatus(err.offline ? 'offline' : 'error', err.message);
+    }
+    this.start();
+    await mySettings.pull();
+    render();
+  },
+
+  /* Signing out leaves this device's copy where it is and stops syncing. The
+     next person to sign in here gets their own family board and settings. */
+  async signOut(){
+    this.stop();
+    mySettings.reset();
+    await auth.signOut();
+    this._setAccount({ kind: 'signed-out' });
+    this.members = null;
+    await this.refreshAccount();
+  },
+
+  /* For a signed-in account that isn't on any list yet: claim the family this
+     device already syncs with (its family code), or start a new family from
+     this device's board. The server refuses the claim once a family has a list. */
+  async setupFamily(){
+    const cfg = cloudConfig();
+    await this._rpc('fh_setup', cfg ? { fid: cfg.familyId, body: null } : { fid: null, body: cloudPayload() });
+    await this.refreshAccount();
+  },
+
+  async loadMembers(){
+    this.members = (await this._rpc('fh_members', {})) || [];
+    return this.members;
+  },
+
+  /* email '' or null takes that person's access away. */
+  async setMemberEmail(personId, email){
+    await this._rpc('fh_set_member', { person: personId, new_email: email || null });
+    await this.loadMembers();
+    if(this.account.kind === 'member' && String(email || '').trim().toLowerCase() === this.account.email){
+      await this.resolveAccount();   // relinked yourself: header avatar and "this is me" follow
+    }
+  },
+
+  async removeMember(email){
+    await this._rpc('fh_remove_member', { target_email: email });
+    await this.loadMembers();
   },
 
   /* Moves the whole family to a code of your choosing: write the board under
@@ -1634,6 +2027,93 @@ const cloudSync = {
   }
 };
 
+/* ======================= PERSONAL SETTINGS =======================
+   The PERSONAL_KEYS slice of state, saved to the signed-in person's own row
+   (fh_get_settings / fh_put_settings) instead of the family board, so it
+   follows them to any device they sign in on. Loaded when the account is
+   confirmed and whenever the app comes back to the screen; saved a moment
+   after any change — saveState() calls queuePush(). Signed out, the same
+   values simply stay on this device. */
+const SETTINGS_PUSH_MS = 1500;
+const mySettings = {
+  lastSent: null,   // the slice as last saved to, or read from, the server (JSON)
+  _timer: null,
+
+  slice(){
+    const out = {};
+    PERSONAL_KEYS.forEach(k=>{ if(state && state[k] !== undefined) out[k] = state[k]; });
+    return out;
+  },
+  reset(){
+    clearTimeout(this._timer);
+    this._timer = null;
+    this.lastSent = null;
+  },
+
+  async pull(){
+    if(cloudSync.mode() !== 'member') return;
+    /* A change made here that hasn't reached the server yet wins: send it
+       rather than overwrite it with an older copy. */
+    if(this._timer || (this.lastSent !== null && JSON.stringify(this.slice()) !== this.lastSent)){
+      await this.push();
+      return;
+    }
+    let remote;
+    try{ remote = await cloudSync._rpc('fh_get_settings', {}); }
+    catch(err){ console.warn('Could not load personal settings:', err.message); return; }
+
+    if(!remote || typeof remote !== 'object' || Array.isArray(remote)){
+      /* First sign-in for this person: start from what this device has, and
+         point the "whose" pickers at them if they're linked to someone on the
+         board. */
+      const me = cloudSync.account.personId;
+      if(me && personById(me)){ state.habitPersonId = me; state.hkWho = me; }
+      await saveLocalOnly();
+      await this.push(true);
+      render();
+      return;
+    }
+    PERSONAL_KEYS.forEach(k=>{ if(remote[k] !== undefined) state[k] = remote[k]; });
+    state = migrateState(state);   // tidies anything malformed or from an older build
+    this.lastSent = JSON.stringify(this.slice());
+    await saveLocalOnly();
+    render();
+  },
+
+  queuePush(){
+    if(cloudSync.mode() !== 'member') return;
+    if(JSON.stringify(this.slice()) === this.lastSent) return;
+    clearTimeout(this._timer);
+    this._timer = setTimeout(()=>{ this._timer = null; this.push(); }, SETTINGS_PUSH_MS);
+  },
+
+  /* Kept on this device whatever happens; a failed save is retried by the next
+     change, the next time the app comes back to the screen, or the next sign-in. */
+  async push(force){
+    if(cloudSync.mode() !== 'member') return;
+    /* One save at a time. A second one started mid-flight would race the first
+       to decide what was last saved, and the loser's change would be lost. */
+    if(this._sending){ this.queuePush(); return; }
+    clearTimeout(this._timer);
+    this._timer = null;
+    const body = JSON.stringify(this.slice());
+    if(!force && body === this.lastSent) return;
+    this._sending = true;
+    try{
+      await cloudSync._rpc('fh_put_settings', { body: JSON.parse(body) });
+      this.lastSent = body;
+      /* Anything changed while that was in flight is still unsaved — this save
+         carried the older copy. Without this, the change would be taken for
+         saved and quietly never sent. */
+      if(JSON.stringify(this.slice()) !== body) this.queuePush();
+    }catch(err){
+      console.warn('Could not save personal settings:', err.message);
+    }finally{
+      this._sending = false;
+    }
+  }
+};
+
 function cloudStatusLabel(){
   switch(cloudSync.status){
     case 'live':       return '🟢 Syncing across every device';
@@ -1658,6 +2138,49 @@ function updateCloudIndicator(){
   btn.textContent = look.icon;
   btn.title = look.title;
   btn.style.opacity = cloudSync.status === 'off' ? '0.45' : '1';
+}
+
+/* Header account button: the signed-in person's avatar, or 👤 when nobody is
+   signed in. Opens the sync panel, where signing in and out lives. */
+function updateAccountButton(){
+  const btn = document.getElementById('accountBtn');
+  if(!btn) return;
+  const acct = cloudSync.account;
+  if(acct.kind === 'member'){
+    const p = acct.personId && state ? personById(acct.personId) : null;
+    if(p) btn.innerHTML = avatarHtml(p, 'sm');
+    else btn.textContent = (acct.email || '?').charAt(0).toUpperCase();
+    btn.title = `Signed in as ${acct.email}${p ? ' (' + p.name + ')' : ''}`;
+  }else{
+    btn.textContent = '👤';
+    btn.title = auth.isSignedIn() ? `Signed in as ${auth.email()} — not on a family list yet` : 'Sign in with Google';
+  }
+}
+
+/* Starts Google sign-in from any button. On success the page leaves for Google,
+   so only a failure comes back here. */
+async function startSignIn(btn){
+  if(btn) btn.disabled = true;
+  try{ await auth.signIn(); }
+  catch(err){
+    if(btn) btn.disabled = false;
+    toast(err.message || 'Couldn\'t start sign-in.', 'error');
+  }
+}
+
+/* On the Home screen, for anyone not signed in, or signed in but not yet on
+   their family's list. Nothing for members, or while the list is unreachable. */
+function signInBannerHtml(){
+  const acct = cloudSync.account;
+  const box = (text, btnId, btnLabel)=>`<div style="background:var(--paper-2); border:1px solid var(--line); border-radius:12px; padding:10px 14px; margin-bottom:12px; font-size:13.5px; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+      <span>${text}</span><button class="btn btn-primary" id="${btnId}">${btnLabel}</button></div>`;
+  if(acct.kind === 'signed-out'){
+    return box('👋 <strong>Sign in with Google</strong> to see your family\'s board and your own settings on this device.', 'bannerSignIn', 'Sign in with Google');
+  }
+  if(acct.kind === 'no-family'){
+    return box(`You're signed in as <strong>${escapeHtml(auth.email())}</strong>, but that account isn't on your family's list yet.`, 'bannerOpenSync', 'Finish setting up');
+  }
+  return '';
 }
 
 function cloudAgoLabel(){
@@ -2236,6 +2759,7 @@ function render(){
     else if(activeTab==='settings') main.innerHTML = renderSettings();
     else { activeTab='dashboard'; main.innerHTML = renderDashboard(); } // catch-all for any unknown view
     attachHandlers();
+    updateAccountButton();   // a renamed person or new avatar shows in the header too
   }catch(err){
     console.error('Render failed:', err);
     main.innerHTML = `<div class="card"><div class="empty">
@@ -2343,7 +2867,7 @@ function renderDashboard(){
     .filter(t=>!t.paused && hkDueness(t) >= 1)
     .sort((a,b)=>hkDueness(b)-hkDueness(a));
 
-  return `<div class="dash-grid">
+  return `${signInBannerHtml()}<div class="dash-grid">
     <div class="dash-hero">
       <div>
         <div class="dash-hello">${greeting()}, ${escapeHtml(familyLabel())}</div>
@@ -3814,16 +4338,16 @@ function hkLastLabel(t){
   return `${since} days ago`;
 }
 
-/* Whoever is holding the screen right now — remembered on this device only, so
-   one person tidying up doesn't reassign everyone else's phone. */
-const HK_WHO_KEY = 'fh-hk-who';
+/* Whoever is doing the cleaning. A personal setting (PERSONAL_KEYS), so it
+   follows the signed-in person and one person tidying up doesn't reassign
+   everyone else's phone. */
+const HK_WHO_KEY = 'fh-hk-who';   // where older builds kept it; migrateState reads it once
 function hkWho(){
-  let id = null;
-  try{ id = localStorage.getItem(HK_WHO_KEY); }catch(e){}
+  const id = state.hkWho;
   if(id && state.people.some(p=>p.id===id)) return id;
   return state.people[0] ? state.people[0].id : '';
 }
-function setHkWho(id){ try{ localStorage.setItem(HK_WHO_KEY, id); }catch(e){} }
+function setHkWho(id){ state.hkWho = id; saveState(); }
 
 let hkView = 'now';        // 'now' | 'areas' | 'plan'
 let hkOpenArea = null;     // area drilled into from the areas view
@@ -4365,8 +4889,10 @@ function mealSlotModal(key){
 function renderSettings(){
   const tz = tzSettings();
   /* Family sync headline: what this device is actually doing with its data. */
-  const familySyncNote = cloudSync.isOn()
-    ? `Cleaning jobs, to-dos, habits, points and meals are syncing through your cloud database, so every device shows the same board. Status: <strong>${cloudStatusLabel()}</strong>.`
+  const familySyncNote = cloudSync.mode() === 'member'
+    ? `Signed in as <strong>${escapeHtml(cloudSync.account.email)}</strong>. Your family's board syncs to every device, and these settings follow you to any device you sign in on. Status: <strong>${cloudStatusLabel()}</strong>.`
+    : cloudSync.isOn()
+    ? `Cleaning jobs, to-dos, habits, points and meals are syncing through your cloud database, so every device shows the same board. Status: <strong>${cloudStatusLabel()}</strong>. <strong>Sign in with Google</strong> (👤 at the top) so your settings follow you.`
     : usingLocalFallback
       ? `⚠️ This copy is saving data <strong>on this device/browser only</strong>. Connect a small free cloud database and every phone, tablet and computer shows the same board — about five minutes, once. After that, one button hands the settings to your other devices in a link.`
       : `This copy already syncs across every device that opens this link, so a cloud database is optional here.`;
@@ -5274,6 +5800,11 @@ begin
   if fid is null or length(fid) < 12 then
     raise exception 'family id is too short to be safe';
   end if;
+  -- Once a family signs in with Google, its members are tied to this row, so a
+  -- device still on the old family code must not move the board to a new code.
+  if body like '{"__movedTo"%' and exists (select 1 from family_hub_members m where m.family_id = fid) then
+    raise exception 'this family signs in with Google now, so its code cannot be changed';
+  end if;
   insert into family_hub_state as t (family_id, payload, rev, updated_by, updated_at)
   values (fid, body, coalesce(newrev, 1), device, now())
   on conflict (family_id) do update
@@ -5410,23 +5941,465 @@ end;
 $$;
 
 revoke all on function family_hub_add(text, text, text, text, text, text, text) from public;
-grant execute on function family_hub_add(text, text, text, text, text, text, text) to anon, authenticated;`;
+grant execute on function family_hub_add(text, text, text, text, text, text, text) to anon, authenticated;
+
+-- ===== Google sign-in =====
+-- Every family member signs in with their own Google account, and only the
+-- accounts on the family's list can open its board. Supabase also needs Google
+-- turned on: Authentication, then Sign In / Providers, then Google.
+
+-- The family's list: one row per Google email. user_id fills in the first
+-- time that person signs in. One family per account, so both are unique.
+create table if not exists public.family_hub_members (
+  email      text primary key check (email = lower(email) and email ~ '^[^@[:space:]]+@[^@[:space:]]+[.][^@[:space:]]+$'),
+  family_id  text not null references public.family_hub_state(family_id) on delete cascade,
+  person_id  text,
+  user_id    uuid unique references auth.users(id) on delete set null,
+  added_at   timestamptz not null default now()
+);
+alter table public.family_hub_members enable row level security;
+revoke all on table public.family_hub_members from anon, authenticated;
+
+-- Each person's own settings: time format, views, weather, screensaver.
+create table if not exists public.family_hub_settings (
+  user_id    uuid primary key references auth.users(id) on delete cascade,
+  settings   jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now()
+);
+alter table public.family_hub_settings enable row level security;
+revoke all on table public.family_hub_settings from anon, authenticated;
+
+-- Like the board, both tables are reachable only through the functions below.
+-- Each works out the caller's family from their sign-in, so there is no
+-- family id to pass, guess or leak. search_path is empty and every name is
+-- schema-qualified, so a caller cannot slip in an object of their own.
+
+-- Who am I? On first sign-in this claims the invite for the account's email.
+-- Only Google sign-ins claim invites; app_metadata is written by Supabase and
+-- cannot be edited by the user.
+create or replace function public.fh_me()
+returns table (family_id text, person_id text, email text)
+language plpgsql security definer set search_path = '' as $$
+#variable_conflict use_column
+declare
+  uid  uuid := auth.uid();
+  mail text := lower(coalesce(auth.jwt() ->> 'email', ''));
+begin
+  if uid is null then raise exception 'sign in first' using errcode = '28000'; end if;
+  if not exists (select 1 from public.family_hub_members m where m.user_id = uid)
+     and coalesce(auth.jwt() -> 'app_metadata' ->> 'provider', '') = 'google' and mail <> '' then
+    update public.family_hub_members m set user_id = uid where m.email = mail and m.user_id is null;
+  end if;
+  return query select m.family_id, m.person_id, m.email from public.family_hub_members m where m.user_id = uid;
+end;
+$$;
+
+-- First sign-in for a family with no list yet: claim the family this device
+-- already syncs with (fid), or start a new one from this device's board
+-- (fid null). Once a family has a list, only its members can add people.
+create or replace function public.fh_setup(fid text, body text)
+returns text
+language plpgsql security definer set search_path = '' as $$
+#variable_conflict use_column
+declare
+  uid    uuid := auth.uid();
+  mail   text := lower(coalesce(auth.jwt() ->> 'email', ''));
+  target text;
+begin
+  if uid is null or mail = '' or coalesce(auth.jwt() -> 'app_metadata' ->> 'provider', '') <> 'google' then
+    raise exception 'sign in with Google first' using errcode = '28000';
+  end if;
+  if exists (select 1 from public.family_hub_members m where m.user_id = uid or m.email = mail) then
+    raise exception 'this Google account is already on a family list' using errcode = '23505';
+  end if;
+  if fid is not null then
+    perform 1 from public.family_hub_state s where s.family_id = fid for update;
+    if not found then raise exception 'no family has that code' using errcode = 'P0002'; end if;
+    if exists (select 1 from public.family_hub_members m where m.family_id = fid) then
+      raise exception 'that family already signs in with Google, so ask someone on it to add your email' using errcode = '42501';
+    end if;
+    target := fid;
+  else
+    if body is null or btrim(body) = '' then
+      raise exception 'there is no board to start the family with' using errcode = '22023';
+    end if;
+    target := 'family-' || replace(gen_random_uuid()::text, '-', '');
+    insert into public.family_hub_state (family_id, payload, rev, updated_by) values (target, body, 1, 'setup');
+  end if;
+  insert into public.family_hub_members (email, family_id, user_id) values (mail, target, uid);
+  return target;
+end;
+$$;
+
+-- The board, for whoever is signed in. Same shapes as the family-code
+-- functions above, minus the family id.
+create or replace function public.fh_meta()
+returns table (rev bigint, updated_at timestamptz, updated_by text)
+language sql stable security definer set search_path = '' as $$
+  select s.rev, s.updated_at, s.updated_by
+    from public.family_hub_state s
+    join public.family_hub_members m on m.family_id = s.family_id
+   where m.user_id = auth.uid();
+$$;
+
+create or replace function public.fh_get()
+returns table (payload text, rev bigint, updated_at timestamptz, updated_by text)
+language sql stable security definer set search_path = '' as $$
+  select s.payload, s.rev, s.updated_at, s.updated_by
+    from public.family_hub_state s
+    join public.family_hub_members m on m.family_id = s.family_id
+   where m.user_id = auth.uid();
+$$;
+
+create or replace function public.fh_put(body text, newrev bigint, device text)
+returns bigint
+language plpgsql security definer set search_path = '' as $$
+declare
+  fid    text;
+  stored bigint;
+begin
+  select m.family_id into fid from public.family_hub_members m where m.user_id = auth.uid();
+  if fid is null then raise exception 'not on a family list' using errcode = '42501'; end if;
+  update public.family_hub_state t
+     set payload = body, rev = greatest(t.rev + 1, coalesce(newrev, 1)), updated_by = device, updated_at = now()
+   where t.family_id = fid
+  returning t.rev into stored;
+  return stored;
+end;
+$$;
+
+-- The family's list, for its members only.
+create or replace function public.fh_members()
+returns table (email text, person_id text, signed_in boolean)
+language sql stable security definer set search_path = '' as $$
+  select m.email, m.person_id, m.user_id is not null
+    from public.family_hub_members m
+   where m.family_id = (select me.family_id from public.family_hub_members me where me.user_id = auth.uid())
+   order by m.added_at, m.email;
+$$;
+
+-- Give a person on the board a Google email, or none to take their access
+-- away. Your own row can be relinked to another person but never removed,
+-- so nobody can lock themselves out.
+create or replace function public.fh_set_member(person text, new_email text)
+returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  fid  text;
+  mine text;
+  mail text := nullif(lower(btrim(coalesce(new_email, ''))), '');
+begin
+  select m.family_id, m.email into fid, mine from public.family_hub_members m where m.user_id = auth.uid();
+  if fid is null then raise exception 'not on a family list' using errcode = '42501'; end if;
+  if person is null or btrim(person) = '' then raise exception 'pick a person' using errcode = '22023'; end if;
+  if mail is not null and mail !~ '^[^@[:space:]]+@[^@[:space:]]+[.][^@[:space:]]+$' then
+    raise exception 'that is not an email address' using errcode = '22023';
+  end if;
+  delete from public.family_hub_members m
+   where m.family_id = fid and m.person_id = person and m.email <> mine and m.email is distinct from mail;
+  if mail is null then return; end if;
+  if exists (select 1 from public.family_hub_members m where m.email = mail and m.family_id <> fid) then
+    raise exception 'that Google account is on another family list' using errcode = '23505';
+  end if;
+  insert into public.family_hub_members as m (email, family_id, person_id) values (mail, fid, person)
+  on conflict (email) do update set person_id = excluded.person_id where m.family_id = excluded.family_id;
+end;
+$$;
+
+-- Take an account off the list by email, for accounts not linked to anyone
+-- on the board. Never your own.
+create or replace function public.fh_remove_member(target_email text)
+returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  fid    text;
+  mine   text;
+  target text := lower(btrim(coalesce(target_email, '')));
+begin
+  select m.family_id, m.email into fid, mine from public.family_hub_members m where m.user_id = auth.uid();
+  if fid is null then raise exception 'not on a family list' using errcode = '42501'; end if;
+  if target = mine then raise exception 'you cannot remove yourself' using errcode = '42501'; end if;
+  delete from public.family_hub_members m where m.family_id = fid and m.email = target;
+end;
+$$;
+
+-- Your own settings. Members only, and capped at 64 KB.
+create or replace function public.fh_get_settings()
+returns jsonb
+language sql stable security definer set search_path = '' as $$
+  select s.settings from public.family_hub_settings s where s.user_id = auth.uid();
+$$;
+
+create or replace function public.fh_put_settings(body jsonb)
+returns void
+language plpgsql security definer set search_path = '' as $$
+begin
+  if not exists (select 1 from public.family_hub_members m where m.user_id = auth.uid()) then
+    raise exception 'not on a family list' using errcode = '42501';
+  end if;
+  if body is null or jsonb_typeof(body) <> 'object' or pg_column_size(body) > 65536 then
+    raise exception 'settings must be a small JSON object' using errcode = '22023';
+  end if;
+  insert into public.family_hub_settings as s (user_id, settings, updated_at) values (auth.uid(), body, now())
+  on conflict (user_id) do update set settings = excluded.settings, updated_at = now();
+end;
+$$;
+
+-- Signed-in members only. Supabase grants new functions to anon by default,
+-- so that grant is taken back explicitly.
+revoke all on function public.fh_me() from public, anon;
+revoke all on function public.fh_setup(text, text) from public, anon;
+revoke all on function public.fh_meta() from public, anon;
+revoke all on function public.fh_get() from public, anon;
+revoke all on function public.fh_put(text, bigint, text) from public, anon;
+revoke all on function public.fh_members() from public, anon;
+revoke all on function public.fh_set_member(text, text) from public, anon;
+revoke all on function public.fh_remove_member(text) from public, anon;
+revoke all on function public.fh_get_settings() from public, anon;
+revoke all on function public.fh_put_settings(jsonb) from public, anon;
+grant execute on function public.fh_me() to authenticated;
+grant execute on function public.fh_setup(text, text) to authenticated;
+grant execute on function public.fh_meta() to authenticated;
+grant execute on function public.fh_get() to authenticated;
+grant execute on function public.fh_put(text, bigint, text) to authenticated;
+grant execute on function public.fh_members() to authenticated;
+grant execute on function public.fh_set_member(text, text) to authenticated;
+grant execute on function public.fh_remove_member(text) to authenticated;
+grant execute on function public.fh_get_settings() to authenticated;
+grant execute on function public.fh_put_settings(jsonb) to authenticated;`;
+
+/* Step two of moving to Google sign-in, run by hand once every device has
+   signed in. Until then the family code keeps working, so nobody is cut off
+   on the day the update lands. */
+const FAMILY_LOCKDOWN_SQL = `-- Family Hub — finish the switch to Google sign-in.
+-- Run this once every device has signed in. Afterwards the family code no
+-- longer opens the board; only signed-in members can. The Apple Reminders
+-- bridge (family_hub_add) keeps working: it can only add items, never read.
+-- Running the setup SQL again re-opens the family code, so run this after it.
+revoke execute on function public.family_hub_meta(text) from anon, authenticated;
+revoke execute on function public.family_hub_get(text) from anon, authenticated;
+revoke execute on function public.family_hub_put(text, text, bigint, text) from anon, authenticated;`;
 
 let cloudFormOpen = false;
 let codeFormOpen = false;
 
 function familySyncModal(){
-  cloudFormOpen = !cloudSync.isOn();
+  /* The family-code form is the older way in; signing in with Google comes
+     first, so the form stays folded until someone asks for it. */
+  cloudFormOpen = false;
   openModal(`
-    <h3>☁️ Family sync</h3>
+    <h3>☁️ Family sync &amp; sign-in</h3>
     <p style="font-size:13px; color:var(--ink-soft); margin-top:-6px;">
-      Cleaning jobs, to-dos, habits, points and meals live in <strong>this browser</strong> until a small cloud database is wired in. Do that once and every phone, tablet and computer shows the same board.
+      Everyone signs in with their own Google account. Signed in, you see your family's board — the same on every phone, tablet and computer — and your own settings follow you.
     </p>
     <div id="cloudBlock"></div>
     <div class="modal-actions"><button class="btn btn-ghost" id="cloudClose">Close</button></div>
   `);
   renderCloudBlock(true);
+  refreshMemberList();
   document.getElementById('cloudClose').onclick = ()=>{ closeModal(); render(); };
+}
+
+/* Loads the family's list for the panel; members only. */
+function refreshMemberList(){
+  if(cloudSync.mode() !== 'member') return;
+  cloudSync.loadMembers()
+    .then(()=>renderCloudBlock(true))
+    .catch(err=>{
+      cloudSync.members = [];
+      renderCloudBlock(true);
+      const el = document.getElementById('memberMsg');
+      if(el){ el.style.color = 'var(--danger)'; el.textContent = err.message; }
+    });
+}
+
+/* The sign-in part of the sync panel, one layout per account state. */
+function accountBlockHtml(){
+  const acct = cloudSync.account;
+  const cfg = cloudConfig();
+  const wrap = inner => `<div style="border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin:0 0 10px;">${inner}</div>`;
+  const signOutBtn = `<button class="btn btn-ghost" id="acctSignOut" style="font-size:12px;">Sign out</button>`;
+
+  if(acct.kind === 'signed-out'){
+    return wrap(`
+      <p style="font-size:13px; margin:0 0 8px;"><strong>Sign in with Google</strong> — everyone uses their own account.</p>
+      <button class="btn btn-primary" id="acctSignIn">Sign in with Google</button>
+      <details style="margin-top:10px;">
+        <summary style="cursor:pointer; font-size:11.5px; color:var(--ink-soft);">Setting up sign-in for the first time?</summary>
+        <ol style="font-size:12px; color:var(--ink-soft); line-height:1.6; margin:6px 0 0; padding-left:18px;">
+          <li>Run the setup SQL once in your Supabase project.
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin:4px 0;">
+              <button class="btn btn-ghost" id="acctCopySql" style="font-size:12px;">📋 Copy SQL</button>
+              <button class="btn btn-ghost" id="acctOpenSql" style="font-size:12px;">↗️ Open SQL editor</button>
+            </div></li>
+          <li>In Supabase, open <strong>Authentication → Sign In / Providers → Google</strong>, switch it on, and paste your Google OAuth client ID and secret.</li>
+          <li>In <strong>Authentication → URL Configuration</strong>, add <code style="user-select:all;">${escapeHtml(authReturnUrl())}</code> to the Redirect URLs.</li>
+        </ol>
+      </details>`);
+  }
+
+  if(acct.kind === 'checking'){
+    return wrap(`
+      <p style="font-size:13px; margin:0 0 8px;">Signed in as <strong>${escapeHtml(auth.email())}</strong>, but your family's list can't be reached right now${acct.detail ? ': ' + escapeHtml(acct.detail) : '.'}</p>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;"><button class="btn btn-primary" id="acctRecheck">Check again</button>${signOutBtn}</div>`);
+  }
+
+  if(acct.kind === 'no-family'){
+    /* Claiming is offered only when this device already belongs to a family;
+       a device without one can only start a new family. That keeps a second
+       phone from quietly creating a rival family instead of joining. */
+    const firstStep = cfg
+      ? `<li style="margin-bottom:6px;"><strong>First one here?</strong> This device syncs with family <code>${escapeHtml(cfg.familyId)}</code>. Switch it to Google sign-in — you'll be on its list and can add everyone else.
+           <br><button class="btn btn-primary" id="acctSetup" style="margin-top:4px; font-size:12px;">Use Google sign-in for this family</button></li>`
+      : `<li style="margin-bottom:6px;"><strong>Starting a brand-new family?</strong> This device's board becomes the family's.
+           <br><button class="btn btn-ghost" id="acctSetup" style="margin-top:4px; font-size:12px;">Start a family with this device's board</button></li>`;
+    return wrap(`
+      <p style="font-size:13px; margin:0 0 6px;">Signed in as <strong>${escapeHtml(auth.email())}</strong> — this account isn't on a family list yet.</p>
+      <ul style="font-size:12.5px; color:var(--ink-soft); line-height:1.6; margin:0 0 8px; padding-left:18px;">
+        <li style="margin-bottom:6px;"><strong>Joining your family?</strong> Ask someone who's signed in to add <strong>${escapeHtml(auth.email())}</strong> under <em>Who can sign in</em> on this panel, then press Check again.</li>
+        ${firstStep}
+      </ul>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;"><button class="btn btn-ghost" id="acctRecheck">Check again</button>${signOutBtn}</div>`);
+  }
+
+  /* ---- member ---- */
+  const mine = acct.email;
+  const list = cloudSync.members;   // null until loaded
+  const byPerson = {};
+  (list || []).forEach(m=>{ if(m.person_id) (byPerson[m.person_id] = byPerson[m.person_id] || []).push(m); });
+  const othersOn = id => (byPerson[id] || []).some(m=>m.email !== mine);
+
+  /* "This is me" offers only people with no one else's email on them, so
+     picking yourself can never take someone else's access away. */
+  const meOptions = state.people
+    .filter(p=>!othersOn(p.id) || p.id === acct.personId)
+    .map(p=>`<option value="${p.id}" ${p.id===acct.personId?'selected':''}>${escapeHtml(p.name)}</option>`).join('');
+
+  const personRows = state.people.map(p=>{
+    if(p.id === acct.personId){
+      return `<div class="list-row" style="gap:8px;">${avatarHtml(p,'sm')}<span class="txt">${escapeHtml(p.name)}</span>
+        <span style="font-size:12px; color:var(--ink-soft);">you · ${escapeHtml(mine)}</span></div>`;
+    }
+    const m = (byPerson[p.id] || []).find(x=>x.email !== mine);
+    const status = m ? (m.signed_in ? '<span style="color:var(--good); font-size:12px;">✓ signed in</span>' : '<span style="font-size:12px; color:var(--ink-soft);">invited</span>') : '';
+    return `<div class="list-row" style="gap:8px;">${avatarHtml(p,'sm')}<span class="txt" style="flex:0 0 auto; min-width:70px;">${escapeHtml(p.name)}</span>
+      <input data-memberemail="${p.id}" value="${escapeHtml(m ? m.email : '')}" placeholder="their Google email" autocomplete="off" style="flex:1; min-width:140px; font-size:12.5px;">
+      ${status}</div>`;
+  }).join('');
+
+  /* Accounts on the list that aren't linked to anyone on the board — yourself
+     before you pick who you are, or someone whose person was renamed away. */
+  const loose = (list || []).filter(m=>!m.person_id || !personById(m.person_id));
+  const looseRows = loose.map(m=>`<div class="list-row" style="gap:8px; font-size:12.5px;">
+      <span class="txt">${escapeHtml(m.email)}${m.email === mine ? ' (you)' : ''}</span>
+      <span style="font-size:12px; color:var(--ink-soft);">${m.signed_in ? '✓ signed in' : 'invited'}</span>
+      ${m.email === mine ? '' : `<button class="row-x" data-memberremove="${escapeHtml(m.email)}" title="Take off the list">✕</button>`}
+    </div>`).join('');
+
+  return wrap(`
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+      <span style="font-size:13px;">Signed in as <strong>${escapeHtml(mine)}</strong></span>${signOutBtn}
+    </div>
+    <div class="field" style="margin:8px 0;"><label>This is me</label>
+      <select id="acctPerson">${acct.personId ? '' : '<option value="">Choose who you are…</option>'}${meOptions}</select></div>
+    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:12.5px; color:var(--ink-soft);">
+      <span>Last sync ${escapeHtml(cloudAgoLabel())}</span>
+      <button class="btn btn-ghost" id="cloudSyncNow" style="font-size:12px;">🔄 Sync now</button>
+    </div>
+    <h4 style="font-size:13.5px; margin:14px 0 2px;">Who can sign in</h4>
+    <p style="font-size:12px; color:var(--ink-soft); margin:0 0 6px;">Add each person's Google email. Only these accounts can open your family's board. Clear an email to take that person's access away.</p>
+    ${list === null ? '<div style="font-size:12.5px; color:var(--ink-soft);">Loading the list…</div>' : personRows + looseRows}
+    <div id="memberMsg" style="font-size:12px; margin-top:6px; min-height:15px;"></div>
+    <details style="margin-top:8px;">
+      <summary style="cursor:pointer; font-size:11.5px; color:var(--ink-soft);">Finish the switch, once everyone has signed in</summary>
+      <p style="font-size:12px; color:var(--ink-soft); line-height:1.5; margin:6px 0;">
+        Until this runs, the old family code still opens your board, so devices that haven't signed in keep working. Once every device has signed in, run this in the Supabase SQL editor so only signed-in family members can get in.
+      </p>
+      <button class="btn btn-ghost" id="acctCopyLockdown" style="font-size:12px;">📋 Copy lockdown SQL</button>
+      <pre style="font-size:11px; line-height:1.5; overflow:auto; background:rgba(0,0,0,0.05); padding:8px 10px; border-radius:8px; margin:6px 0 0;">${escapeHtml(FAMILY_LOCKDOWN_SQL)}</pre>
+    </details>`);
+}
+
+/* Wires up whatever accountBlockHtml() drew. */
+function attachAccountHandlers(setMsg){
+  const memberMsg = (text, ok)=>{
+    const el = document.getElementById('memberMsg');
+    if(el){ el.style.color = ok === false ? 'var(--danger)' : 'var(--good)'; el.textContent = text; }
+  };
+  const busy = async (btn, work)=>{
+    if(btn) btn.disabled = true;
+    try{ await work(); }
+    catch(err){ if(btn) btn.disabled = false; setMsg((err && err.message) || 'That didn\'t work.', false); }
+  };
+
+  const signIn = document.getElementById('acctSignIn');
+  if(signIn) signIn.onclick = ()=>startSignIn(signIn);
+
+  const signOut = document.getElementById('acctSignOut');
+  if(signOut) signOut.onclick = ()=>busy(signOut, async ()=>{
+    await cloudSync.signOut();
+    renderCloudBlock(true);
+    toast('Signed out. This device keeps its copy of the board but stops syncing until someone signs in.', 'success');
+  });
+
+  const recheck = document.getElementById('acctRecheck');
+  if(recheck) recheck.onclick = ()=>busy(recheck, async ()=>{
+    await cloudSync.refreshAccount();
+    renderCloudBlock(true);
+    refreshMemberList();
+    if(cloudSync.mode() === 'member') toast('You\'re on your family\'s list. ✅', 'success');
+  });
+
+  const setup = document.getElementById('acctSetup');
+  if(setup) setup.onclick = ()=>busy(setup, async ()=>{
+    await cloudSync.setupFamily();
+    renderCloudBlock(true);
+    refreshMemberList();
+    toast('Google sign-in is on for your family. Add everyone\'s Google email under Who can sign in. ✅', 'success');
+  });
+
+  const person = document.getElementById('acctPerson');
+  if(person) person.onchange = ()=>{
+    if(!person.value) return;
+    person.disabled = true;
+    cloudSync.setMemberEmail(person.value, cloudSync.account.email)
+      .then(()=>{ renderCloudBlock(true); render(); toast(`Got it — you're ${personById(person.value).name}.`, 'success'); })
+      .catch(err=>{ person.disabled = false; memberMsg(err.message, false); });
+  };
+
+  document.querySelectorAll('[data-memberemail]').forEach(inp=>inp.onchange = ()=>{
+    const email = inp.value.trim();
+    if(email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ memberMsg('That doesn\'t look like an email address.', false); return; }
+    inp.disabled = true;
+    const who = personById(inp.dataset.memberemail);
+    cloudSync.setMemberEmail(inp.dataset.memberemail, email)
+      .then(()=>{
+        renderCloudBlock(true);
+        memberMsg(email ? `${who ? who.name : 'They'} can now sign in with ${email.toLowerCase()}.` : `${who ? who.name : 'That person'} can no longer sign in.`, true);
+      })
+      .catch(err=>{ inp.disabled = false; memberMsg(err.message, false); });
+  });
+
+  document.querySelectorAll('[data-memberremove]').forEach(b=>b.onclick = ()=>{
+    b.disabled = true;
+    cloudSync.removeMember(b.dataset.memberremove)
+      .then(()=>{ renderCloudBlock(true); memberMsg('Taken off the list.', true); })
+      .catch(err=>{ b.disabled = false; memberMsg(err.message, false); });
+  });
+
+  const copyLock = document.getElementById('acctCopyLockdown');
+  if(copyLock) copyLock.onclick = async ()=>{
+    try{ await navigator.clipboard.writeText(FAMILY_LOCKDOWN_SQL); memberMsg('Lockdown SQL copied. Paste it into the Supabase SQL editor and press Run.', true); }
+    catch(e){ memberMsg('Copy failed — select the SQL below and copy it by hand.', false); }
+  };
+
+  const copySql = document.getElementById('acctCopySql');
+  if(copySql) copySql.onclick = async ()=>{
+    try{ await navigator.clipboard.writeText(CLOUD_SETUP_SQL); setMsg('SQL copied. Open the SQL editor, paste, and press Run.', true); }
+    catch(e){ setMsg('Copy failed — open the family code setup below and copy the SQL from there.', false); }
+  };
+  const openSql = document.getElementById('acctOpenSql');
+  if(openSql) openSql.onclick = ()=>window.open(cloudSqlEditorUrl(cloudProject().url), '_blank', 'noopener');
 }
 
 /* `force` marks a redraw the person asked for. Background status updates leave
@@ -5435,7 +6408,9 @@ function familySyncModal(){
 function renderCloudBlock(force){
   const block = document.getElementById('cloudBlock');
   if(!block) return;
-  if(!force && (codeFormOpen || cloudFormOpen)) return;
+  const typing = block.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+  if(!force && (codeFormOpen || cloudFormOpen || typing)) return;
+  const member = cloudSync.mode() === 'member';
   const cfg = cloudConfig();
   const on = !!cfg;
 
@@ -5458,7 +6433,9 @@ function renderCloudBlock(force){
       </div>
     </div>` : '';
 
-  const connectedSummary = on ? `
+  /* The family-code controls (setup link, code, rename, stop) belong to the
+     older way in. A signed-in device gets its family from the account instead. */
+  const connectedSummary = (on && !member) ? `
     <div style="background:rgba(0,0,0,0.04); border-radius:8px; padding:8px 10px; margin:0 0 10px; font-size:12.5px; line-height:1.7;">
       <div>Database: <strong>${escapeHtml(cloudHost(cfg))}</strong></div>
       <div>Family: <code style="user-select:all;">${escapeHtml(cfg.familyId)}</code></div>
@@ -5497,7 +6474,11 @@ function renderCloudBlock(force){
       The setup link contains the key — send it to your own devices the way you'd hand over a house key, not in a public post.
     </p>` : '';
 
-  const form = (!on || cloudFormOpen) ? `
+  /* Folded away by default now that signing in is the main way to join; still
+     there for the setup SQL and for devices that haven't signed in yet. */
+  const showFormBtn = (!member && !on && !cloudFormOpen) ? `
+    <button class="btn btn-ghost" id="cloudShowForm" style="font-size:12px; margin-top:4px;">Set up with a family code instead (older way)</button>` : '';
+  const form = (!member && cloudFormOpen) ? `
     <div style="border:1px solid var(--line, rgba(0,0,0,0.12)); border-radius:10px; padding:10px 12px; margin:10px 0 0;">
       <p style="font-size:12.5px; margin:0 0 8px;"><strong>Two steps — the project details are already filled in</strong></p>
       <ol style="font-size:12.5px; color:var(--ink-soft); line-height:1.6; margin:0; padding-left:18px;">
@@ -5551,8 +6532,10 @@ function renderCloudBlock(force){
       Status: <strong>${cloudStatusLabel()}</strong>${cloudSync.pendingPush && cloudSync.status !== 'live' ? ' · changes waiting to go up' : ''}
     </p>
     ${cloudSync.detail ? `<p style="font-size:11.5px; color:var(--danger); margin:-4px 0 8px;">${escapeHtml(cloudSync.detail)}</p>` : ''}
+    ${accountBlockHtml()}
     ${backupBlock}
     ${connectedSummary}
+    ${showFormBtn}
     ${form}
     <div id="cloudStatusMsg" style="font-size:12.5px; margin-top:8px; min-height:16px;"></div>`;
 
@@ -5560,6 +6543,10 @@ function renderCloudBlock(force){
     const el = document.getElementById('cloudStatusMsg');
     if(el){ el.style.color = ok === false ? 'var(--danger)' : (ok ? 'var(--good)' : 'var(--ink-soft)'); el.textContent = msg; }
   };
+  attachAccountHandlers(setMsg);
+
+  const showForm = document.getElementById('cloudShowForm');
+  if(showForm) showForm.onclick = ()=>{ cloudFormOpen = true; renderCloudBlock(true); };
 
   const gen = document.getElementById('cloudGenFamily');
   if(gen) gen.onclick = ()=>{ document.getElementById('cloudFamily').value = newFamilyId(); };
@@ -5805,35 +6792,62 @@ async function initCloudSync(){
   const cloudBtn = document.getElementById('cloudBtn');
   if(cloudBtn) cloudBtn.onclick = familySyncModal;
 
-  document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState === 'visible') cloudSync.tick(); });
+  const accountBtn = document.getElementById('accountBtn');
+  if(accountBtn) accountBtn.onclick = familySyncModal;
+
+  /* Coming back to the screen: check the board, and pick up any settings this
+     person changed on another device in the meantime. */
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.visibilityState !== 'visible') return;
+    cloudSync.tick();
+    mySettings.pull();
+  });
   window.addEventListener('online',  ()=>cloudSync.tick());
   window.addEventListener('offline', ()=>{ if(cloudSync.isOn()) cloudSync.setStatus('offline'); });
 
-  if(cloudSync.isOn()){
-    cloudSync.setStatus('connecting');
-    try{
-      const result = await cloudSync.pull(false);
-      if(result === 'empty') await cloudSync.push();   // this device seeds the family row
-      else if(result === 'applied') render();
-    }catch(err){
-      cloudSync.setStatus(err.offline ? 'offline' : 'error', err.message);
+  /* Back from Google? Finish signing in before anything else, so the first
+     sync already runs as that person. */
+  let justSignedIn = false;
+  try{
+    justSignedIn = (await auth.finishRedirect()) === 'signed-in';
+  }catch(err){
+    toast(err.message || 'Sign-in didn\'t finish.', 'error');
+  }
+
+  /* Works out the account (member, not on a list, or signed out), then loads the
+     board and this person's settings. Devices that haven't signed in carry on
+     with the family code if they have one. */
+  await cloudSync.refreshAccount();
+
+  if(justSignedIn){
+    const acct = cloudSync.account;
+    if(acct.kind === 'member'){
+      const p = acct.personId ? personById(acct.personId) : null;
+      toast(`Signed in${p ? ' as ' + p.name : ''}. ✅`, 'success');
+      if(!acct.personId) familySyncModal();   // first sign-in: say who you are, add everyone else
+    }else{
+      familySyncModal();                     // not on a list yet: show the ways forward
     }
-    cloudSync.start();
+    return;
   }
 
   const invite = takeInviteFromHash();
-  if(invite){ cloudInviteModal(invite); return; }
+  if(invite){
+    if(cloudSync.mode() === 'member') toast('You\'re signed in with Google, so that setup link isn\'t needed — your family comes from your account.', 'success');
+    else cloudInviteModal(invite);
+    return;
+  }
 
   /* An iOS home-screen install gets its own empty storage, so it arrives here
      looking like a factory-fresh device — placeholder names and all. Say so on
      first launch instead of letting it look like sync is simply broken. */
-  if(!cloudSync.isOn() && isStandalone()){
+  if(!cloudSync.isOn() && !auth.isSignedIn() && isStandalone()){
     let prompted = null;
     try{ prompted = localStorage.getItem(CLOUD_PROMPTED_KEY); }catch(e){}
     if(!prompted){
       try{ localStorage.setItem(CLOUD_PROMPTED_KEY, '1'); }catch(e){}
       familySyncModal();
-      toast('This install starts fresh — join your family to see everyone\'s data.', 'error');
+      toast('This install starts fresh — sign in with Google to see your family\'s board.', 'error');
     }
   }
 }
@@ -6525,8 +7539,14 @@ function attachHandlers(){
   });
   document.querySelectorAll('[data-editavatar]').forEach(b=>b.onclick = ()=>avatarModal(b.dataset.editavatar));
   document.querySelectorAll('[data-delperson]').forEach(b=>b.onclick = ()=>{
-    state.people = state.people.filter(p=>p.id!==b.dataset.delperson);
+    const id = b.dataset.delperson;
+    state.people = state.people.filter(p=>p.id!==id);
     saveState(); render();
+    /* Someone taken off the board shouldn't keep a way in: their Google email
+       comes off the family's list too. */
+    if(cloudSync.mode() === 'member'){
+      cloudSync.setMemberEmail(id, null).catch(err=>toast('Removed from the board, but their sign-in is still on the list: ' + err.message, 'error'));
+    }
   });
   const addPersonBtn = document.getElementById('addPersonBtn');
   if(addPersonBtn) addPersonBtn.onclick = ()=>{
@@ -6541,6 +7561,10 @@ function attachHandlers(){
   if(exportBtn) exportBtn.onclick = syncModal;
   const familySyncBtn = document.getElementById('familySyncBtn');
   if(familySyncBtn) familySyncBtn.onclick = familySyncModal;
+  const bannerSignIn = document.getElementById('bannerSignIn');
+  if(bannerSignIn) bannerSignIn.onclick = ()=>startSignIn(bannerSignIn);
+  const bannerOpenSync = document.getElementById('bannerOpenSync');
+  if(bannerOpenSync) bannerOpenSync.onclick = familySyncModal;
   const timeFormatSel = document.getElementById('timeFormatSel');
   if(timeFormatSel) timeFormatSel.onchange = ()=>{
     state.timeFormat = timeFormatSel.value === '24h' ? '24h' : '12h';
@@ -6613,6 +7637,8 @@ function shiftCal(dir){
   try{
     await loadState();
     state.calFilter = [];           // every session opens on the family calendar
+    auth.load();                    // the saved Google sign-in, if any
+    cloudSync.restoreCachedAccount();   // so the first screen already knows who's signed in
     render();
     resetIdleTimer();
     initGoogleSync();
