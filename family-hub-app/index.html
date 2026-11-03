@@ -6138,7 +6138,17 @@ function renderSettings(){
 
       <h3 style="font-size:15px;">Family sync — every phone, tablet, and computer</h3>
       <p style="font-size:13px; color:var(--ink-soft); line-height:1.5;">${familySyncNote}</p>
-      <button class="btn btn-ghost" id="familySyncBtn">☁️ Open family sync</button>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn btn-ghost" id="familySyncBtn">☁️ Open family sync</button>
+        ${/* Sign out is also inside the Family sync panel, but nobody looks for
+              it there -- Settings is where people go to sign out of anything.
+              Rendered only when there is actually a session to end, so the
+              button never appears as a no-op. */''}
+        ${auth.isSignedIn() ? `<button class="btn btn-ghost" id="settingsSignOut">🚪 Sign out of ${escapeHtml(auth.email())}</button>` : ''}
+      </div>
+      ${auth.isSignedIn() ? `<p style="font-size:12px; color:var(--ink-soft); line-height:1.5; margin:6px 0 0;">
+        Signing out stops this device syncing and forgets your personal settings here. <strong>Your family's board is not deleted</strong> — it stays on this device and on the server, and signing back in picks it up again. Other devices are unaffected.
+      </p>` : ''}
 
       <hr style="margin:20px 0; border:none; border-top:1px solid var(--line);">
 
@@ -9183,6 +9193,30 @@ function attachHandlers(){
   if(exportBtn) exportBtn.onclick = syncModal;
   const familySyncBtn = document.getElementById('familySyncBtn');
   if(familySyncBtn) familySyncBtn.onclick = familySyncModal;
+
+  /* Sign out from Settings. Confirmed rather than instant, because on an iOS
+     home-screen app signing back in is not reliably possible -- the OAuth
+     redirect leaves the installed app for Safari, which has its own separate
+     storage -- so signing out there can strand the device. Cheap to confirm,
+     expensive to undo.
+
+     cloudSync.signOut() stops the poll, resets personal settings, ends the
+     session with /logout?scope=local, and re-reads the account. It does NOT
+     touch the saved board, which is why the wording promises that. */
+  const settingsSignOut = document.getElementById('settingsSignOut');
+  if(settingsSignOut) settingsSignOut.onclick = async ()=>{
+    if(!confirm(`Sign out of ${auth.email()}?\n\nYour family's board stays on this device and on the server — nothing is deleted. This device stops syncing until you sign in again.`)) return;
+    settingsSignOut.disabled = true;
+    try{
+      await cloudSync.signOut();
+      toast('Signed out. The board on this device is untouched.', 'success');
+    }catch(err){
+      toast((err && err.message) || 'Sign out failed.', 'error');
+    }
+    /* Rebuilds Settings without the button, or with it re-enabled on failure. */
+    render();
+  };
+
   const bannerOpenSync = document.getElementById('bannerOpenSync');
   if(bannerOpenSync) bannerOpenSync.onclick = familySyncModal;
 
