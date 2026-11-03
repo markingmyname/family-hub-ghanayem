@@ -2163,6 +2163,12 @@ const cloudSync = {
   isOn(){ return this.mode() !== 'off'; },
 
   setStatus(status, detail){
+    /* Only a change into the error state is worth a row. Re-reporting the same
+       status on every poll is what the cooldown in event() is there to stop,
+       but not raising it at all is cheaper still. */
+    if(status === 'error' && detail && this.detail !== detail){
+      try{ dailyLog.event('sync', detail, { status: status }); }catch(_){}
+    }
     this.status = status;
     this.detail = detail || '';
     updateCloudIndicator();
@@ -2705,10 +2711,10 @@ const mySettings = {
 
    WHY THE FILE IS NOT WRITTEN AS THE DAY GOES ON
    A web page cannot write files to a disk by itself -- browsers do not allow it,
-   and they would not run at 11:59pm anyway unless somebody happened to have the
+   and they would not run at midnight anyway unless somebody happened to have the
    app open. So the rows go to the database as they happen, a scheduled job in
-   Postgres seals each day at 11:59pm in the family's own timezone, and the app
-   turns a sealed day into a real file when asked.
+   Postgres seals each finished day at 12:30am in the family's own timezone,
+   and the app turns a sealed day into a real file when asked.
 
    DEPENDS ON
      fh_log, fh_log_day, fh_log_days, fh_sealed_day   in the setup SQL
@@ -2733,11 +2739,14 @@ const LOG_QUEUE_KEY  = 'fh-log-queue';
 const LOG_SEQ_KEY    = 'fh-log-seq';   // counts changes on this device, so no two share a key
 const LOG_QUEUE_MAX  = 4000;   // roughly three weeks of heavy use before the oldest is dropped
 const LOG_BATCH_MAX  = 500;    // the limit fh_log enforces, so the call cannot be refused for size
-const LOG_RETRY_MS   = 20000;  // a failed send waits this long rather than hammering a dead connection
+const LOG_RETRY_MS   = 20000;
+const LOG_EVENT_COOLDOWN_MS = 5 * 60 * 1000;  // the same error is logged at most this often
+const LOG_MESSAGE_MAX = 180;                  // enough to identify a fault, short enough to scan  // a failed send waits this long rather than hammering a dead connection
 
 const dailyLog = {
   _queue: null,
   _seq: null,
+  _recent: new Map(),   // kind|message -> when it was last logged, for the cooldown
   _busy: false,
   _retryTimer: null,
   lastError: '',
@@ -2822,9 +2831,55 @@ const dailyLog = {
     }
     /* Bounded on purpose. A device left offline for a month should not grow its
        storage without limit; the oldest unsent rows go first. */
+    this._queued(q);
+  },
+
+  /* Trims, stores and tries to send. Shared by record() and event() so the
+     queue is only managed in one place. */
+  _queued(q){
     if(q.length > LOG_QUEUE_MAX) q.splice(0, q.length - LOG_QUEUE_MAX);
     this.persist();
     this.flush();
+  },
+
+  /* Anything worth knowing that is not a board change: a crash, a failed
+     sign-in, a sync that stopped working.
+
+     Deliberately NOT guarded on being a member, unlike record(). The most
+     important thing this logs is a sign-in that failed, and by definition
+     nobody is a member when that happens. The row waits in the queue and goes
+     up after the next successful sign-in; flush() is what enforces the
+     membership rule.
+
+     kind is 'error', 'signin' or 'sync'. They are stored under an app.* path so
+     they sort apart from board changes when the day is read back. */
+  event(kind, message, detail){
+    const text = scrubForLog(message);
+    if(!text) return;
+    /* A dropped connection re-reports itself on every poll. Without a cooldown
+       an afternoon offline would write hundreds of identical rows and bury the
+       one thing worth reading. */
+    const key = kind + '|' + text;
+    const now = Date.now();
+    if(this._recent.get(key) > now - LOG_EVENT_COOLDOWN_MS) return;
+    this._recent.set(key, now);
+
+    const when = new Date(syncNow());
+    const q = this.queue();
+    q.push({
+      k: this.keyFor(),
+      day: fmtDate(when),
+      at: when.toISOString(),
+      by_name: (signedInPerson() || {}).name || '',
+      device: deviceId(),
+      path: 'app.' + kind,
+      op: kind === 'signin' ? 'signin' : 'error',
+      item_id: '',
+      item_name: text,
+      n: 1,
+      detail: detail && typeof detail === 'object' ? detail : null
+    });
+    this._queued(q);
   },
 
   /* Sends what is queued, oldest first, in batches the database will accept.
@@ -2862,8 +2917,8 @@ const dailyLog = {
   },
 
   /* One day, as rows. Prefers the sealed copy -- the snapshot the scheduled job
-     took at 11:59pm that day -- and falls back to reading the live rows, which
-     is what today needs, because today has not been sealed yet. */
+     took at 12:30am the morning after -- and falls back to reading the live
+     rows, which is what today needs, because today has not been sealed yet. */
   async day(dayStr){
     const sealed = await cloudSync._rpc('fh_sealed_day', { d: dayStr });
     if(sealed && Array.isArray(sealed.entries)) return { sealed: true, sealedAt: sealed.sealed_at, rows: sealed.entries };
@@ -2892,6 +2947,23 @@ const dailyLog = {
     return { name, rows: rows.length, sealed };
   }
 };
+
+/* Error text can arrive carrying the very thing that must never be written
+   down: a sign-in failure may quote the callback URL, which holds the one-time
+   code, and a token refresh may quote the token. Anything that looks like a
+   credential is replaced before the row is queued, and the result is capped so
+   a stack trace cannot become a log entry. */
+function scrubForLog(message){
+  let text = String((message && message.message) || message || '').trim();
+  if(!text) return '';
+  text = text
+    .replace(/(access_token|refresh_token|id_token|code_verifier|client_secret|apikey|api_key)=[^&\s"']+/gi, '$1=[removed]')
+    .replace(/[?&]code=[^&\s"']+/gi, '?code=[removed]')
+    .replace(/\beyJ[A-Za-z0-9_.-]{20,}/g, '[token removed]')
+    .replace(/\bsb_(secret|publishable)_[A-Za-z0-9_-]+/g, '[key removed]')
+    .replace(/\s+/g, ' ');
+  return text.length > LOG_MESSAGE_MAX ? text.slice(0, LOG_MESSAGE_MAX - 1) + '\u2026' : text;
+}
 
 /* One row per change, with the item's own fields flattened into their own
    columns so a spreadsheet can sort and total them without any unpacking. */
@@ -2997,22 +3069,41 @@ async function startSignIn(btn){
   catch(err){
     if(btn) btn.disabled = false;
     toast(err.message || 'Couldn\'t start sign-in.', 'error');
+    /* Queued even though nobody is signed in: it goes up with the next
+       successful sign-in, which is when somebody will want to know why the
+       previous attempt failed. */
+    dailyLog.event('signin', err.message || 'Could not start sign-in', { stage: 'start' });
   }
 }
 
-/* On the Home screen, for anyone not signed in, or signed in but not yet on
-   their family's list. Nothing for members, or while the list is unreachable. */
-function signInBannerHtml(){
+/* The account strip on Home. Always present, because "am I signed in, and as
+   who?" is a question the dashboard should answer without anyone opening a
+   panel or hovering a tooltip.
+
+   Signing in happens in ONE place now: the Family sync panel. This strip used
+   to carry its own Sign in with Google button, which meant two routes into the
+   same flow and two things to keep in step. Every state here opens the panel
+   instead. */
+function accountStripHtml(){
   const acct = cloudSync.account;
-  const box = (text, btnId, btnLabel)=>`<div style="background:var(--paper-2); border:1px solid var(--line); border-radius:12px; padding:10px 14px; margin-bottom:12px; font-size:13.5px; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
-      <span>${text}</span><button class="btn btn-primary" id="${btnId}">${btnLabel}</button></div>`;
-  if(acct.kind === 'signed-out'){
-    return box('👋 <strong>Sign in with Google</strong> to see your family\'s board and your own settings on this device.', 'bannerSignIn', 'Sign in with Google');
+  const strip = (body, label, muted)=>`<div style="background:${muted ? 'transparent' : 'var(--paper-2)'}; border:1px solid var(--line); border-radius:12px; padding:${muted ? '7px 12px' : '10px 14px'}; margin-bottom:12px; font-size:${muted ? '12.5px' : '13.5px'}; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+      <span style="display:flex; align-items:center; gap:7px;">${body}</span>
+      <button class="btn ${muted ? 'btn-ghost' : 'btn-primary'}" id="bannerOpenSync" style="${muted ? 'font-size:12px;' : ''}">${label}</button></div>`;
+
+  if(acct.kind === 'member'){
+    const p = acct.personId && state ? personById(acct.personId) : null;
+    if(p) return strip(`${avatarHtml(p, 'sm')} <span style="color:var(--ink-soft);">Signed in as</span> <strong>${escapeHtml(p.name)}</strong>`, 'Family sync', true);
+    return strip(`<span style="color:var(--ink-soft);">Signed in as</span> <strong>${escapeHtml(acct.email)}</strong> <span style="color:var(--ink-soft);">— say which person you are</span>`, 'Family sync', false);
   }
   if(acct.kind === 'no-family'){
-    return box(`You're signed in as <strong>${escapeHtml(auth.email())}</strong>, but that account isn't on your family's list yet.`, 'bannerOpenSync', 'Finish setting up');
+    return strip(`You're signed in as <strong>${escapeHtml(auth.email())}</strong>, but that account isn't on your family's list yet.`, 'Finish setting up', false);
   }
-  return '';
+  if(acct.kind === 'checking'){
+    /* Signed in, but the family list has not answered yet. Saying so beats
+       showing "not signed in" and sending someone to sign in a second time. */
+    return strip(`<span style="color:var(--ink-soft);">Checking your family list…</span>`, 'Family sync', true);
+  }
+  return strip(`👋 <strong>Not signed in.</strong> <span style="color:var(--ink-soft);">Sign in with Google in Family sync to see your family's board and have your own settings follow you.</span>`, 'Open Family sync', false);
 }
 
 function cloudAgoLabel(){
@@ -3581,11 +3672,18 @@ function toast(msg, type){
 window.addEventListener('error', (e)=>{
   console.error('Caught error:', e.error || e.message);
   toast('Something went wrong, but the app is still running. Try again.', 'error');
+  /* Logged as well as shown. A fault nobody reports is a fault nobody fixes,
+     and the person who hits it is usually busy doing something else. */
+  try{ dailyLog.event('error', (e.error && e.error.message) || e.message,
+       { source: e.filename ? String(e.filename).split('/').pop() : '', line: e.lineno || 0 }); }
+  catch(_){ /* logging must never be the thing that breaks the page */ }
 });
 window.addEventListener('unhandledrejection', (e)=>{
   console.error('Unhandled promise rejection:', e.reason);
   const msg = (e.reason && e.reason.message) ? e.reason.message : 'An action didn\'t finish.';
   toast(msg.length < 90 ? msg : 'An action didn\'t finish — please try again.', 'error');
+  try{ dailyLog.event('error', msg, { kind: 'unhandled-rejection' }); }
+  catch(_){ /* never let logging break the page */ }
   e.preventDefault();
 });
 function openModal(html){
@@ -3744,7 +3842,7 @@ function renderDashboard(){
     .filter(t=>!t.paused && hkDueness(t) >= 1)
     .sort((a,b)=>hkDueness(b)-hkDueness(a));
 
-  return `${signInBannerHtml()}<div class="dash-grid">
+  return `${accountStripHtml()}<div class="dash-grid">
     <div class="dash-hero">
       <div>
         <div class="dash-hello">${greeting()}, ${escapeHtml(familyLabel())}</div>
@@ -7223,11 +7321,15 @@ language sql security definer set search_path = '' as $$
 $$;
 
 -- ---------------------------------------------------------------------------
--- Sealing the day. A browser cannot be relied on to be awake at 11:59pm, so a
--- scheduled job inside Postgres takes the snapshot instead. Each family is
--- sealed at 11:59pm in ITS OWN timezone: the job runs every hour at minute 59
--- and only acts on a family whose local hour is 23, which means daylight
--- saving needs no maintenance here. See LOG_SCHEDULE_SQL for the schedule.
+-- Sealing the day. A browser cannot be relied on to be awake at midnight, so
+-- a scheduled job inside Postgres takes the snapshot instead. Each family is
+-- sealed at 12:30am in ITS OWN timezone, and what it seals is the day that has
+-- just ENDED. Half past midnight rather than just before it: a snapshot taken
+-- at 11:59pm can never contain that day's last minute, and a little clearance
+-- past midnight also absorbs a late-arriving write from a phone that was
+-- offline. The job runs every hour at minute 30 and only acts on a family
+-- whose local hour is 0, so daylight saving needs no maintenance here.
+-- See LOG_SCHEDULE_SQL for the schedule.
 alter table family_hub_state add column if not exists tz text;
 
 create table if not exists family_hub_log_sealed (
@@ -7292,13 +7394,13 @@ begin
       -- from being sealed.
       localnow := now() at time zone 'America/Chicago';
     end;
-    if extract(hour from localnow) <> 23 then continue; end if;
+    if extract(hour from localnow) <> 0 then continue; end if;
     today := localnow::date;
-    n := n + public.fh_seal_one(fam.family_id, today);
-    -- Yesterday is refreshed too, which picks up anything written in the last
-    -- minute after it was sealed. Cheap, and it makes the snapshot exact
-    -- instead of nearly right.
+    -- The day that just ended, sealed whole.
     n := n + public.fh_seal_one(fam.family_id, today - 1);
+    -- And the one before it, refreshed. That costs nothing when nothing has
+    -- changed, and it means a night the job did not run is not a lost day.
+    n := n + public.fh_seal_one(fam.family_id, today - 2);
   end loop;
   return n;
 end;
@@ -7317,7 +7419,7 @@ language sql security definer set search_path = '' as $$
    where m.user_id = auth.uid() and z.day = d;
 $$;
 
--- Which timezone 11:59pm means for this family.
+-- Which timezone the nightly seal runs on for this family.
 create or replace function public.fh_set_tz(zone text)
 returns text
 language plpgsql security definer set search_path = '' as $$
@@ -7401,23 +7503,24 @@ revoke execute on function public.family_hub_meta(text) from anon, authenticated
 revoke execute on function public.family_hub_get(text) from anon, authenticated;
 revoke execute on function public.family_hub_put(text, text, bigint, text) from anon, authenticated;`;
 
-/* Turns on the 11:59pm seal. Run once, after the setup SQL. Kept separate
+/* Turns on the nightly seal. Run once, after the setup SQL. Kept separate
    because it needs the pg_cron extension, which a Supabase project may have to
    be told to enable in the dashboard first -- and because a failure here must
    not stop the rest of the setup from going in. */
-const LOG_SCHEDULE_SQL = `-- Family Hub — seal each day's log at 11:59pm.
+const LOG_SCHEDULE_SQL = `-- Family Hub — seal each day's log at 12:30am.
 -- Run this ONCE, after the main setup SQL.
 -- If the first line fails, turn pg_cron on in the Supabase dashboard under
 -- Database > Extensions, then run this again.
 create extension if not exists pg_cron;
 
--- Every hour at minute 59. fh_seal_days only acts on a family whose own local
--- hour is 23, so each family is sealed once a day at 11:59pm ITS time, and
--- daylight saving needs no change here. Running hourly also means a missed run
--- is not a lost day: the next hour picks it up.
+-- Every hour at minute 30. fh_seal_days only acts on a family whose own local
+-- hour is 0, so each family is sealed once a day at 12:30am ITS time (Central
+-- by default), and daylight saving needs no change here. What it seals is the
+-- day that just ended. Running hourly also means a missed run is not a lost
+-- day: the next run refreshes it.
 select cron.unschedule('family-hub-seal-day')
  where exists (select 1 from cron.job where jobname = 'family-hub-seal-day');
-select cron.schedule('family-hub-seal-day', '59 * * * *', 'select public.fh_seal_days()');
+select cron.schedule('family-hub-seal-day', '30 * * * *', 'select public.fh_seal_days()');
 
 -- Check it took:
 --   select jobname, schedule, active from cron.job;
@@ -7559,7 +7662,7 @@ function accountBlockHtml(){
     <div id="activityFeed" style="font-size:12.5px; line-height:1.7; max-height:200px; overflow:auto;">${activityFeedHtml()}</div>
 
     <h4 style="font-size:13.5px; margin:16px 0 2px;">Daily log</h4>
-    <p style="font-size:12px; color:var(--ink-soft); margin:0 0 6px;">Every change is kept permanently, one row each. Each day is sealed at 11:59pm, and any day can be downloaded as a spreadsheet.</p>
+    <p style="font-size:12px; color:var(--ink-soft); margin:0 0 6px;">Every change is kept permanently, one row each. Each day is sealed at 12:30am the next morning, and any day can be downloaded as a spreadsheet.</p>
     <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
       <select id="logDay" style="max-width:220px;"><option value="">Loading days…</option></select>
       <button class="btn btn-ghost" id="logCsv" style="font-size:12px;">⬇️ CSV</button>
@@ -7578,9 +7681,9 @@ function accountBlockHtml(){
     </details>
 
     <details style="margin-top:8px;">
-      <summary style="cursor:pointer; font-size:11.5px; color:var(--ink-soft);">Turn on the 11:59pm seal (run once)</summary>
+      <summary style="cursor:pointer; font-size:11.5px; color:var(--ink-soft);">Turn on the nightly log seal (run once)</summary>
       <p style="font-size:12px; color:var(--ink-soft); line-height:1.5; margin:6px 0;">
-        Changes are logged as they happen either way. This schedules a job inside the database that takes a sealed snapshot of each day at 11:59pm, so a day can never be altered after the fact. It is separate because it needs the pg_cron extension turned on.
+        Changes are logged as they happen either way. This schedules a job inside the database that takes a sealed snapshot of each finished day at 12:30am, so a day can never be altered after the fact. It is separate because it needs the pg_cron extension turned on.
       </p>
       <button class="btn btn-ghost" id="acctCopySchedule" style="font-size:12px;">📋 Copy schedule SQL</button>
       <pre style="font-size:11px; line-height:1.5; overflow:auto; background:rgba(0,0,0,0.05); padding:8px 10px; border-radius:8px; margin:6px 0 0;">${escapeHtml(LOG_SCHEDULE_SQL)}</pre>
@@ -8945,8 +9048,6 @@ function attachHandlers(){
   if(exportBtn) exportBtn.onclick = syncModal;
   const familySyncBtn = document.getElementById('familySyncBtn');
   if(familySyncBtn) familySyncBtn.onclick = familySyncModal;
-  const bannerSignIn = document.getElementById('bannerSignIn');
-  if(bannerSignIn) bannerSignIn.onclick = ()=>startSignIn(bannerSignIn);
   const bannerOpenSync = document.getElementById('bannerOpenSync');
   if(bannerOpenSync) bannerOpenSync.onclick = familySyncModal;
   const timeFormatSel = document.getElementById('timeFormatSel');
