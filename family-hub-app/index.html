@@ -1008,6 +1008,24 @@ function migrateState(s){
   if(s.syncAssignTo === undefined) s.syncAssignTo = '';
   if(s.syncAssignTo && !(s.people||[]).some(p=>p.id === s.syncAssignTo)) s.syncAssignTo = '';
   if(!s.familyLabel) s.familyLabel = 'Ghanayem family';
+  /* Change tracking (see SYNC_SHAPE). `meta` holds the timestamps that let two
+     devices merge instead of one overwriting the other, and `activity` is the
+     family's record of who changed what. Both are part of the shared board. */
+  if(!s.meta || typeof s.meta !== 'object') s.meta = {};
+  ['fields','maps','gone','counters'].forEach(k=>{
+    if(!s.meta[k] || typeof s.meta[k] !== 'object') s.meta[k] = {};
+  });
+  if(!Array.isArray(s.activity)) s.activity = [];
+  /* Points used to be one running total per person, which can only hold one
+     answer when two devices award at the same moment. Everything earned before
+     this build is carried over as a single starting tally so nobody loses
+     points in the switch; new awards land in the awarding device's own tally. */
+  if(!s.points || typeof s.points !== 'object') s.points = { byDevice:{} };
+  if(!s.points.byDevice){
+    const carried = {};
+    Object.keys(s.points).forEach(k=>{ if(typeof s.points[k] === 'number') carried[k] = s.points[k]; });
+    s.points = { byDevice: Object.keys(carried).length ? { 'earned-before-change-tracking': carried } : {} };
+  }
   if(!s.outlook) s.outlook = { clientId: '' };
   if(!s.google) s.google = { clientId: '' };
   if(!s.google.calendarId) s.google.calendarId = 'ac3601938b78b11f2849f0a53d25e7047d4c115a510dd7d02464bc8a72b60a85@group.calendar.google.com';
@@ -1168,6 +1186,445 @@ async function saveLocalOnly(){
   }
 }
 
+/* >>> SYNC ENGINE BEGIN (the test harness slices on these markers) >>> */
+/* ==================== CHANGE TRACKING AND MERGE ====================
+   WHAT THIS DOES
+   The family board is one JSON document shared by every device. Until this
+   block existed, a device sent its whole copy up and the last writer took the
+   lot: two people editing inside the same poll window meant one of them
+   silently lost everything they had just done. Three pieces fix that.
+
+     SYNC_SHAPE    A description of where the board keeps its data and how each
+                   part is allowed to merge. Adding a feature means adding a
+                   line here, not editing the merge code.
+     stampBoard()  Runs just before sending. Compares this device's copy with
+                   the copy the server last confirmed, writes a timestamp onto
+                   whatever actually changed, records deletions in a graveyard,
+                   and returns the list of changes that becomes the activity
+                   feed. One pass produces both, because they are the same
+                   question asked twice.
+     mergeBoards() Runs just after receiving. Combines the two copies item by
+                   item, newest timestamp per item, so both people's edits live.
+
+   DEPENDS ON
+     syncNow()     server-corrected clock, defined in the sync section below.
+                   Without it a device with a wrong clock would win every
+                   conflict or lose every one.
+     Nothing else. Every function here is pure apart from stampBoard(), which
+     deliberately writes its stamps into the board it is given. That is what
+     lets the test harness run this outside a browser.
+
+   USED BY
+     cloudSync.push()   stamps before serialising
+     cloudSync.pull()   merges instead of replacing
+     renderActivity()   reads state.activity
+
+   WHY TIMESTAMPS AND NOT A VERSION NUMBER PER ITEM
+   A counter needs one authority to hand out the next number, and a household's
+   devices are offline half the time. Wall-clock time needs no authority, and
+   the server-corrected clock removes the one thing that breaks it. */
+
+const SYNC_TOMBSTONE_DAYS   = 30;    // how long a deletion is remembered, so a sleeping device cannot resurrect it
+const ACTIVITY_MAX          = 200;   // entries kept in the feed
+const ACTIVITY_COLLAPSE_AT  = 4;     // more changes than this to one list in one save become a single "added 12 events" line
+const HK_LOG_MAX            = 400;   // matches the cap the Housekeeping page already applies
+const SYN_DETAIL_MAX        = 400;   // longer than this is a photo or a pasted note, not data
+
+/* How each part of the board is allowed to merge.
+
+   lists     Arrays of objects carrying a stable `id`. Merged item by item.
+             `quiet` keeps a list out of the activity feed. `append` marks a
+             log that is only ever added to, so it merges by union with no
+             timestamps and is trimmed to `cap` newest by `sortKey`.
+   maps      Plain objects used as key to value. Merged key by key, with the
+             timestamps held alongside in meta.maps because the values
+             themselves (true, a meal name) have nowhere to put one.
+   fields    Single values, replaced whole, newest wins.
+   counters  Per-device tallies, summed on read. A device only ever writes its
+             own shard, so two people awarding points at once cannot collide --
+             there is nothing left to resolve. */
+const SYNC_SHAPE = {
+  lists: [
+    { path:'people',             noun:'person' },
+    { path:'events',             noun:'event' },
+    { path:'rewards',            noun:'reward' },
+    { path:'meals.recipes',      noun:'recipe' },
+    { path:'meals.pantry',       noun:'pantry item' },
+    { path:'meals.grocery',      noun:'grocery item' },
+    { path:'habits.items',       noun:'habit' },
+    { path:'todos.lists',        noun:'to-do list' },
+    { path:'todos.sections',     noun:'section' },
+    { path:'todos.items',        noun:'to-do' },
+    { path:'housekeeping.areas', noun:'cleaning area' },
+    { path:'housekeeping.tasks', noun:'cleaning job' },
+    { path:'housekeeping.log',   noun:'cleaning tick', quiet:true, append:true, sortKey:'date', cap:HK_LOG_MAX },
+    { path:'activity',           noun:'activity entry', quiet:true, append:true, sortKey:'at',  cap:ACTIVITY_MAX }
+  ],
+  maps: [
+    { path:'habits.log', noun:'habit tick', quiet:true },
+    { path:'meals.plan', noun:'planned meal' }
+  ],
+  fields: [
+    { path:'familyLabel',  noun:'family name' },
+    { path:'syncAssignTo', noun:'calendar sync target', quiet:true },
+    { path:'google',       noun:'Google calendar settings', quiet:true },
+    { path:'outlook',      noun:'Outlook settings', quiet:true }
+  ],
+  counters: [ { path:'points' } ]
+};
+
+/* ---- small helpers ---- */
+
+function synGet(obj, path){
+  let cur = obj;
+  for(const part of path.split('.')){
+    if(cur === null || typeof cur !== 'object') return undefined;
+    cur = cur[part];
+  }
+  return cur;
+}
+function synSet(obj, path, value){
+  const parts = path.split('.');
+  let cur = obj;
+  for(let i = 0; i < parts.length - 1; i++){
+    if(cur[parts[i]] === null || typeof cur[parts[i]] !== 'object') cur[parts[i]] = {};
+    cur = cur[parts[i]];
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+function synMeta(board){
+  if(!board.meta || typeof board.meta !== 'object') board.meta = {};
+  const m = board.meta;
+  if(!m.fields   || typeof m.fields   !== 'object') m.fields = {};
+  if(!m.maps     || typeof m.maps     !== 'object') m.maps = {};
+  if(!m.gone     || typeof m.gone     !== 'object') m.gone = {};
+  if(!m.counters || typeof m.counters !== 'object') m.counters = {};
+  return m;
+}
+/* Key order in an object literal is not guaranteed to match between devices, so
+   two copies of the same item can stringify differently. Sorting the keys makes
+   "has this actually changed?" answerable by string comparison, which is far
+   cheaper than a recursive walk. `_u` is excluded because it IS the answer. */
+function synPrint(value){
+  if(value === undefined) return 'undefined';
+  if(value === null || typeof value !== 'object') return JSON.stringify(value);
+  if(Array.isArray(value)) return '[' + value.map(synPrint).join(',') + ']';
+  return '{' + Object.keys(value).filter(k=>k !== '_u').sort()
+    .map(k=>JSON.stringify(k) + ':' + synPrint(value[k])).join(',') + '}';
+}
+/* Items name themselves differently across the app -- people and groceries use
+   `name`, events and to-dos use `title`. Asking in order keeps the feed working
+   when a new list arrives using either convention. */
+function synLabel(item){
+  if(!item || typeof item !== 'object') return '';
+  return String(item.name || item.title || item.text || '').trim();
+}
+function synIndex(arr){
+  const by = new Map();
+  (Array.isArray(arr) ? arr : []).forEach(it=>{ if(it && it.id != null) by.set(String(it.id), it); });
+  return by;
+}
+function synStamp(item){ const n = Number(item && item._u); return Number.isFinite(n) ? n : 0; }
+
+/* A trimmed copy of an item, kept alongside each change for the daily log.
+   Scalar fields only, and nothing long: without the trim, editing one person
+   would carry their avatar photo into the log every time, which would be
+   megabytes a week. What survives -- who it is assigned to, points, due date,
+   done, category, quantity, a short note -- is the part worth analysing. */
+function synDetail(item){
+  if(!item || typeof item !== 'object') return null;
+  const out = {};
+  for(const key of Object.keys(item)){
+    if(key === '_u' || key === 'id') continue;
+    const v = item[key];
+    if(v === null || typeof v === 'number' || typeof v === 'boolean'){ out[key] = v; continue; }
+    if(typeof v === 'string'){ if(v.length <= SYN_DETAIL_MAX) out[key] = v; continue; }
+    if(Array.isArray(v)){
+      const flat = v.every(x=>typeof x === 'string' || typeof x === 'number');
+      if(flat && JSON.stringify(v).length <= SYN_DETAIL_MAX) out[key] = v;
+    }
+  }
+  return out;
+}
+
+/* ---- stamping: what changed on this device since the server last agreed ----
+   Mutates `board` on purpose: the stamps have to travel up in the same push as
+   the change they describe, and persist locally so a reload does not lose them.
+   `base` is the board as the server last confirmed it; null means there is no
+   agreed copy yet, in which case nothing is reported as news.
+
+   Returns both shapes the callers need, because they want different things:
+     entries  what the family sees -- collapsed, so one calendar import reads as
+              one line, and quiet lists left out altogether.
+     changes  every individual change, uncollapsed and including the quiet ones
+              (habit ticks, chore ticks), which is what the daily log keeps. */
+function stampBoard(board, base, nowMs, who){
+  const meta = synMeta(board);
+  const found = [];                                  // {path, noun, op, name, quiet}
+
+  for(const spec of SYNC_SHAPE.lists){
+    if(spec.append) continue;                        // logs are add-only; nothing to diff
+    const curArr = synGet(board, spec.path);
+    if(!Array.isArray(curArr)) continue;
+    const baseArr = base ? synGet(base, spec.path) : null;
+    const baseBy  = synIndex(baseArr);
+
+    for(const item of curArr){
+      if(!item || item.id == null) continue;
+      const prev = baseBy.get(String(item.id));
+      if(!base){
+        /* No agreed copy to compare against, so leave existing stamps alone and
+           only fill in a missing one. Calling everything "new" here would let a
+           freshly reloaded device outrank newer edits from everyone else. */
+        if(item._u === undefined) item._u = 0;
+      }else if(!prev){
+        item._u = nowMs;
+        found.push({ path:spec.path, noun:spec.noun, op:'add', id:String(item.id),
+                      name:synLabel(item), detail:synDetail(item), quiet:spec.quiet });
+      }else if(synPrint(item) !== synPrint(prev)){
+        item._u = nowMs;
+        found.push({ path:spec.path, noun:spec.noun, op:'edit', id:String(item.id),
+                      name:synLabel(item), detail:synDetail(item), quiet:spec.quiet });
+      }else if(item._u === undefined){
+        item._u = synStamp(prev);
+      }
+    }
+
+    /* Deletions. The item is already gone from the array, so this graveyard
+       entry is the only record of it -- without one, any device that still
+       holds the item hands it straight back on the next merge. */
+    if(base){
+      const live = new Set(curArr.filter(i=>i && i.id != null).map(i=>String(i.id)));
+      for(const [id, prev] of baseBy){
+        if(live.has(id)) continue;
+        if(!meta.gone[spec.path]) meta.gone[spec.path] = {};
+        meta.gone[spec.path][id] = nowMs;
+        found.push({ path:spec.path, noun:spec.noun, op:'remove', id:id, name:synLabel(prev), quiet:spec.quiet });
+      }
+    }
+  }
+
+  /* Maps: a habit tick or a planned meal has nowhere to carry its own stamp, so
+     the stamp lives beside it. An absent key with a recent stamp means
+     "deleted", which is how un-ticking a habit survives a merge. */
+  for(const spec of SYNC_SHAPE.maps){
+    const cur = synGet(board, spec.path);
+    if(cur === null || typeof cur !== 'object') continue;
+    if(!base) continue;
+    const prev = synGet(base, spec.path) || {};
+    if(!meta.maps[spec.path]) meta.maps[spec.path] = {};
+    const stamps = meta.maps[spec.path];
+    for(const key of new Set([...Object.keys(cur), ...Object.keys(prev)])){
+      const a = Object.prototype.hasOwnProperty.call(cur, key);
+      const b = Object.prototype.hasOwnProperty.call(prev, key);
+      if(a && b && synPrint(cur[key]) === synPrint(prev[key])) continue;
+      stamps[key] = nowMs;
+      found.push({ path:spec.path, noun:spec.noun, op: a ? (b ? 'edit' : 'add') : 'remove', id:key,
+                   name: a ? String(cur[key] === true ? key : cur[key]) : String(prev[key] === true ? key : prev[key]),
+                   quiet:spec.quiet });
+    }
+  }
+
+  /* Single values, replaced whole. */
+  for(const spec of SYNC_SHAPE.fields){
+    if(!base) continue;
+    const a = synGet(board, spec.path), b = synGet(base, spec.path);
+    if(synPrint(a) === synPrint(b)) continue;
+    meta.fields[spec.path] = nowMs;
+    found.push({ path:spec.path, noun:spec.noun, op:'edit', id:spec.path,
+                 name: synLabel(a) || (a === null || typeof a !== 'object' ? String(a) : ''), quiet:spec.quiet });
+  }
+
+  /* Per-device counters. Only the shard belonging to this device can have
+     changed, so the stamp records that and nothing needs resolving later. No
+     feed entry: the chore or habit that earned the points already made one. */
+  for(const spec of SYNC_SHAPE.counters){
+    const cur = synGet(board, spec.path + '.byDevice');
+    if(cur === null || typeof cur !== 'object') continue;
+    const prev = (base && synGet(base, spec.path + '.byDevice')) || {};
+    for(const shard of Object.keys(cur)){
+      if(base && synPrint(cur[shard]) === synPrint(prev[shard])) continue;
+      meta.counters[spec.path + '.' + shard] = base ? nowMs : 0;
+    }
+  }
+
+  synPruneGraveyard(meta, nowMs);
+  const entries = synActivityFor(found, nowMs, who);
+  if(entries.length){
+    board.activity = synTrim([...entries, ...(Array.isArray(board.activity) ? board.activity : [])],
+                             'at', ACTIVITY_MAX);
+  }
+  return { entries, changes: found };
+}
+
+/* A deletion only needs remembering for as long as a device might plausibly
+   have been asleep still holding the old item. Keeping them forever would grow
+   the board without limit. */
+function synPruneGraveyard(meta, nowMs){
+  const cutoff = nowMs - SYNC_TOMBSTONE_DAYS * 86400000;
+  for(const path of Object.keys(meta.gone)){
+    const ids = meta.gone[path];
+    for(const id of Object.keys(ids)) if((Number(ids[id]) || 0) < cutoff) delete ids[id];
+    if(!Object.keys(ids).length) delete meta.gone[path];
+  }
+}
+
+/* Turns raw change records into feed entries. A bulk action -- importing a
+   calendar, seeding the cleaning plan -- collapses into one line, so one import
+   cannot bury a day of real family activity. */
+function synActivityFor(found, nowMs, who){
+  const groups = new Map();
+  for(const f of found){
+    if(f.quiet) continue;
+    const key = f.path + '|' + f.op;
+    if(!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(f);
+  }
+  const out = [];
+  for(const [, list] of groups){
+    const first = list[0];
+    out.push({
+      id: synActivityId(nowMs, first.path, first.op, list.map(f=>f.id || '')),
+      at: nowMs,
+      by: (who && who.id) || '',
+      byName: (who && who.name) || '',
+      path: first.path,
+      noun: first.noun,
+      op: first.op,
+      name: list.length > ACTIVITY_COLLAPSE_AT ? '' : list.map(f=>f.name).filter(Boolean).join(', '),
+      n: list.length
+    });
+  }
+  return out;
+}
+/* The id has to come out the same on every device for the same change, or a
+   merge would stack duplicates of one line. It is built from WHAT changed
+   rather than exactly when, so a change stamped a second time -- which is what
+   happens when a write is refused and replayed after merging -- lands on the
+   line it already produced instead of adding another. The minute bucket keeps a
+   genuinely repeated change (added, removed, added again) separate. */
+function synActivityId(nowMs, path, op, ids){
+  const key = path + '|' + op + '|' + (ids || []).slice().sort().join('|');
+  let h = 0;
+  for(let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0;
+  return Math.floor(nowMs / 60000).toString(36) + '-' + op + '-' + (h >>> 0).toString(36);
+}
+
+/* Union by id, newest first, capped. Used for the add-only logs, where there is
+   never a conflict to resolve -- only duplicates to drop and age to trim. */
+function synTrim(arr, sortKey, cap){
+  const by = new Map();
+  for(const it of arr) if(it && it.id != null && !by.has(String(it.id))) by.set(String(it.id), it);
+  const list = [...by.values()].sort((a,b)=>{
+    const av = a[sortKey], bv = b[sortKey];
+    if(av === bv) return String(a.id) < String(b.id) ? 1 : -1;   // stable, and identical on every device
+    return av < bv ? 1 : -1;                                     // newest first
+  });
+  return list.slice(0, cap);
+}
+
+/* ---- merging: combine this device's copy with the family's ----
+   Pure: returns a new board and changes neither argument. `mine` wins nothing
+   by being mine -- every decision is made on timestamps, so two devices merging
+   the same pair of copies always land on the same answer. */
+function mergeBoards(mine, theirs){
+  const out   = JSON.parse(JSON.stringify(mine));
+  const meta  = synMeta(out);
+  const tMeta = synMeta(JSON.parse(JSON.stringify(theirs)));
+
+  /* Graveyards first: the merged board has to remember every deletion either
+     side knew about before any item is considered for survival. */
+  for(const path of Object.keys(tMeta.gone)){
+    if(!meta.gone[path]) meta.gone[path] = {};
+    for(const [id, at] of Object.entries(tMeta.gone[path])){
+      meta.gone[path][id] = Math.max(Number(meta.gone[path][id]) || 0, Number(at) || 0);
+    }
+  }
+
+  for(const spec of SYNC_SHAPE.lists){
+    const a = synGet(out, spec.path), b = synGet(theirs, spec.path);
+    if(!Array.isArray(a) && !Array.isArray(b)) continue;
+
+    if(spec.append){
+      synSet(out, spec.path, synTrim([...(a||[]), ...(b||[])], spec.sortKey, spec.cap));
+      continue;
+    }
+
+    const bBy  = synIndex(b);
+    const kept = [];
+    const seen = new Set();
+    const gone = meta.gone[spec.path] || {};
+    const take = item=>{
+      /* A deletion wins only if it happened STRICTLY later than the surviving
+         edit. On an exact tie the edit stays: a resurrected item is visible and
+         can be deleted again, while a lost edit is invisible and simply gone. */
+      if((Number(gone[String(item.id)]) || 0) > synStamp(item)) return;
+      kept.push(item);
+    };
+    for(const item of (Array.isArray(a) ? a : [])){
+      if(!item || item.id == null) continue;
+      const id = String(item.id);
+      seen.add(id);
+      const other = bBy.get(id);
+      if(!other){ take(item); continue; }
+      const sa = synStamp(item), sb = synStamp(other);
+      if(sb > sa) take(other);
+      else if(sa > sb) take(item);
+      else take(synPrint(item) >= synPrint(other) ? item : other);   // tie: same answer on both devices
+    }
+    for(const [id, item] of bBy) if(!seen.has(id)) take(item);
+    synSet(out, spec.path, kept);
+  }
+
+  /* Maps: whichever side stamped the key more recently decides both whether it
+     exists and what it holds. */
+  for(const spec of SYNC_SHAPE.maps){
+    const a = synGet(out, spec.path), b = synGet(theirs, spec.path);
+    if((a === null || typeof a !== 'object') && (b === null || typeof b !== 'object')) continue;
+    const av = a || {}, bv = b || {};
+    const as = meta.maps[spec.path] || {}, bs = tMeta.maps[spec.path] || {};
+    const merged = {}, stamps = {};
+    for(const key of new Set([...Object.keys(av), ...Object.keys(bv), ...Object.keys(as), ...Object.keys(bs)])){
+      const sa = Number(as[key]) || 0, sb = Number(bs[key]) || 0;
+      const hasA = Object.prototype.hasOwnProperty.call(av, key);
+      const hasB = Object.prototype.hasOwnProperty.call(bv, key);
+      let useA;
+      if(sa !== sb) useA = sa > sb;
+      else if(hasA !== hasB) useA = hasA;                             // tie: present beats absent
+      else useA = synPrint(av[key]) >= synPrint(bv[key]);
+      const has = useA ? hasA : hasB;
+      if(has) merged[key] = useA ? av[key] : bv[key];
+      if(sa || sb) stamps[key] = Math.max(sa, sb);
+    }
+    synSet(out, spec.path, merged);
+    meta.maps[spec.path] = stamps;
+  }
+
+  for(const spec of SYNC_SHAPE.fields){
+    const sa = Number(meta.fields[spec.path]) || 0, sb = Number(tMeta.fields[spec.path]) || 0;
+    if(sb > sa){ synSet(out, spec.path, synGet(theirs, spec.path)); meta.fields[spec.path] = sb; }
+  }
+
+  /* Counters: take each shard from whichever side stamped it last. Because only
+     the owning device ever writes its own shard, that side is always the owner's
+     own truth, so two devices awarding points at the same moment both count. */
+  for(const spec of SYNC_SHAPE.counters){
+    const a = synGet(out, spec.path + '.byDevice') || {};
+    const b = synGet(theirs, spec.path + '.byDevice') || {};
+    const merged = {};
+    for(const shard of new Set([...Object.keys(a), ...Object.keys(b)])){
+      const key = spec.path + '.' + shard;
+      const sa = Number(meta.counters[key]) || 0, sb = Number(tMeta.counters[key]) || 0;
+      const useA = sa !== sb ? sa > sb : Object.prototype.hasOwnProperty.call(a, shard);
+      merged[shard] = useA ? a[shard] : b[shard];
+      meta.counters[key] = Math.max(sa, sb);
+    }
+    synSet(out, spec.path + '.byDevice', merged);
+  }
+  return out;
+}
+/* <<< SYNC ENGINE END <<< */
+
 /* ======================= CROSS-DEVICE FAMILY SYNC =======================
    Local storage keeps this device instant and usable with no connection. A
    single row in a free Supabase (Postgres) table keeps every OTHER device
@@ -1197,7 +1654,9 @@ async function saveLocalOnly(){
 const CLOUD_CONFIG_KEY = 'fh-cloud-config';
 const CLOUD_DEVICE_KEY = 'fh-device-id';
 const CLOUD_PROMPTED_KEY = 'fh-cloud-prompted';
-const CLOUD_POLL_MS    = 8000;   // how often a visible tab checks for news
+const CLOUD_POLL_MS    = 2500;   // how often a visible tab checks for news. Was 8000:
+                                 // that was how wide the window was for two people to
+                                 // edit from the same stale copy.
 const CLOUD_PUSH_MS    = 700;    // debounce, so a burst of edits is one write
 
 /* Each person's own settings — where they are in the app and how they like it.
@@ -1384,11 +1843,12 @@ function cloudSqlEditorUrl(url){
 }
 
 /* Everything except each person's own settings — that's what goes in the row. */
-function cloudPayload(){
+function boardOf(src){
   const copy = {};
-  Object.keys(state).forEach(k=>{ if(!PERSONAL_KEYS.includes(k)) copy[k] = state[k]; });
-  return JSON.stringify(copy);
+  Object.keys(src || {}).forEach(k=>{ if(!PERSONAL_KEYS.includes(k)) copy[k] = src[k]; });
+  return copy;
 }
+function cloudPayload(){ return JSON.stringify(boardOf(state)); }
 
 /* `fn` is the database function that was called. The sign-in ones (fh_*) raise
    plain-English reasons, so those are passed straight through. */
@@ -1612,6 +2072,47 @@ function writeCachedAccount(acct){
 }
 function forgetCachedAccount(){ try{ localStorage.removeItem(AUTH_ACCOUNT_KEY); }catch(e){} }
 
+/* The clock the merge runs on. Every poll and every write brings back the
+   server's own time, and the difference from this device's clock is remembered
+   here. Without it, a tablet whose date is a day out would win every
+   disagreement, and one a day behind would lose every one. Until the first
+   answer arrives this is the device clock, which is correct: a device that has
+   never reached the server has nothing to disagree with yet. */
+let syncClockSkewMs = 0;
+function noteServerTime(serverIso){
+  if(!serverIso) return;
+  const t = Date.parse(serverIso);
+  if(Number.isFinite(t)) syncClockSkewMs = t - Date.now();
+}
+function syncNow(){ return Date.now() + syncClockSkewMs; }
+
+/* Who the activity feed credits. The signed-in account knows the email and
+   which person on the board it is linked to; the person's name is what the
+   family actually recognises, so that is preferred and the email is the
+   fallback. Returns null when nobody is signed in, and the feed then records
+   the change without a name rather than guessing. */
+function signedInPerson(){
+  const acct = cloudSync.account;
+  if(!acct || acct.kind !== 'member') return null;
+  const person = acct.personId ? personById(acct.personId) : null;
+  return {
+    id: acct.personId || acct.email || '',
+    name: (person && person.name) || String(acct.email || '').split('@')[0] || ''
+  };
+}
+
+/* What counts as "this device has something to send". `meta` is left out
+   deliberately: it is bookkeeping that both sides union when their copies meet,
+   so a device that has only gained someone else's timestamps has nothing new to
+   say. Including it made every change bounce back and forth once between
+   devices. Compared canonically, because two devices can serialise the same
+   data with their keys in a different order. */
+function boardFingerprint(board){
+  const copy = {};
+  Object.keys(board || {}).forEach(k=>{ if(k !== 'meta') copy[k] = board[k]; });
+  return synPrint(copy);
+}
+
 const cloudSync = {
   status: 'off',        // off | connecting | live | offline | error
   /* Who is signed in on this device, and what that opens. Exactly one of:
@@ -1622,7 +2123,8 @@ const cloudSync = {
      mode() derives from this, so the two can never disagree. */
   account: { kind: 'signed-out' },
   members: null,        // the family's list (fh_members) while the sync panel shows it
-  lastPushedBody: null, // the board as last sent or received, so unchanged saves send nothing
+  agreed: null,         // the board as the SERVER last confirmed it: the base for
+                        // working out what changed, and for knowing what is still owed
   detail: '',
   rev: 0,               // highest revision this device has seen
   lastSyncAt: 0,
@@ -1696,7 +2198,16 @@ const cloudSync = {
 
   /* Just the revision marker — a few bytes, which is what makes polling cheap. */
   async fetchMeta(){
-    if(this.mode() === 'member') return ((await this._rpc('fh_meta', {})) || [])[0] || null;
+    if(this.mode() === 'member'){
+      /* fh_meta_v2 answers with one object, or with nothing when this person is
+         on no family list or the family has no board yet -- the same two "there
+         is nothing here" cases the older call signalled by returning no rows.
+         It also carries the server's clock, which is what keeps every device
+         stamping its edits on the same timeline. */
+      const row = await this._rpc('fh_meta_v2', {});
+      if(row && typeof row === 'object'){ noteServerTime(row.server_now); return row; }
+      return null;
+    }
     const cfg = cloudConfig(); if(!cfg) return null;
     const rows = await this._rpc('family_hub_meta', { fid: cfg.familyId });
     return (rows && rows[0]) || null;
@@ -1709,12 +2220,17 @@ const cloudSync = {
     return (rows && rows[0]) || null;
   },
 
-  /* Replaces this device's copy with the family's, keeping this person's own
-     settings (PERSONAL_KEYS) exactly as they are. */
+  /* Combines the family's copy with this device's, keeping this person's own
+     settings (PERSONAL_KEYS) exactly as they are.
+
+     This used to replace the board outright, which is why two people editing in
+     the same few seconds meant one of them lost everything they had just done.
+     mergeBoards works through the board item by item instead, taking the newer
+     timestamp for each, so both people's edits survive. */
   applyRemote(remote){
     const keep = {};
     PERSONAL_KEYS.forEach(k=>{ if(state && state[k] !== undefined) keep[k] = state[k]; });
-    const merged = migrateState(remote);
+    const merged = migrateState(mergeBoards(migrateState(state || {}), migrateState(remote)));
     PERSONAL_KEYS.forEach(k=>{ if(keep[k] !== undefined) merged[k] = keep[k]; });
     if(!merged.calView) merged.calView = 'month';
     if(!merged.calDate) merged.calDate = todayStr();
@@ -1762,9 +2278,15 @@ const cloudSync = {
     this.applyRemote(remote);
     this.rev = Number(row.rev) || 0;
     this.lastSyncAt = Date.now();
-    this.lastPushedBody = cloudPayload();   // this device now matches the family; nothing to send back
+    /* The agreed copy is the one the SERVER holds, not the merged result. Where
+       merging brought in work this device had and the server did not, that
+       difference is still owed, and the queued push sends it. Recording the
+       merged board here instead would leave this device believing it was up to
+       date while still holding changes nobody else can see. */
+    this.agreed = remote;
     this.setStatus('live');
     await saveLocalOnly();
+    if(boardFingerprint(boardOf(state)) !== boardFingerprint(this.agreed)) this.queuePush();
     return 'applied';
   },
 
@@ -1774,25 +2296,66 @@ const cloudSync = {
   async push(){
     if(!this.isOn()) return false;
     if(this._busy){ this.pendingPush = true; return false; }
+
+    /* Work out what actually changed since the copy the server confirmed: stamp
+       those items with the time, record any deletions in the graveyard, and
+       collect the feed lines. One pass answers both "what am I sending" and
+       "what do I tell the family", because they are the same question. */
+    const stamped = stampBoard(state, this.agreed, syncNow(), signedInPerson());
+    const board = boardOf(state);
+
     /* Personal settings aren't in the board, so changing one leaves the board
        as it was. Sending it anyway would bump the revision and make every other
        device download the board and say "Updated from another device". */
-    const body = cloudPayload();
-    if(body === this.lastPushedBody){ this.pendingPush = false; return false; }
+    if(this.agreed && boardFingerprint(board) === boardFingerprint(this.agreed)){
+      this.pendingPush = false;
+      return false;
+    }
+    const body = JSON.stringify(board);
     this._busy = true;
     try{
-      /* The database picks the revision number: it takes whichever is higher,
-         our proposal or one past what's already stored. A device that has been
-         asleep therefore can't reuse a number and confuse the others, and it
-         takes one round trip instead of two to work that out. */
-      const stored = this.mode() === 'member'
-        ? await this._rpc('fh_put', { body, newrev: this.rev + 1, device: deviceId() })
-        : await this._rpc('family_hub_put', { fid: cloudConfig().familyId, body, newrev: this.rev + 1, device: deviceId() });
-      this.rev = Number(stored) || this.rev + 1;
-      this.lastPushedBody = body;
+      if(this.mode() === 'member'){
+        /* `baserev` is the revision this device was working from. The database
+           refuses the write if anyone has written since, instead of letting it
+           erase work this device never saw. */
+        const res = await this._rpc('fh_put_v2', { body, baserev: this.rev, device: deviceId() });
+        if(res) noteServerTime(res.server_now);
+        if(res && res.conflict){
+          /* Somebody else wrote while this edit was being made. Nothing is
+             lost: take their copy, merge this device's work into it, and the
+             pull queues the result to go back up. */
+          this.rev = Number(res.rev) || 0;
+          await this.pull(true);
+          this.pendingPush = true;
+          this.setStatus('live');
+          return true;
+        }
+        this.rev = Number(res && res.rev) || this.rev;
+      }else{
+        /* The older family-code path. The database picks the revision number:
+           whichever is higher, our proposal or one past what is stored, so a
+           device that has been asleep can't reuse a number. It has no guard, but
+           it is no longer able to lose anything either -- the other device now
+           merges its own copy back in rather than accepting the overwrite. */
+        const stored = await this._rpc('family_hub_put', { fid: cloudConfig().familyId, body, newrev: this.rev + 1, device: deviceId() });
+        this.rev = Number(stored) || this.rev + 1;
+      }
+      /* Cloned, because `board` shares its objects with `state` and the next
+         edit would otherwise change the very copy we are comparing against. */
+      this.agreed = JSON.parse(body);
       this.pendingPush = false;
       this.lastSyncAt = Date.now();
       this.setStatus('live');
+      /* The stamps and feed lines are part of the board now, so this device's
+         own storage has to hold them too. Without this a reload would drop
+         them and this device would look untouched to everyone else. */
+      await saveLocalOnly();
+      /* The board is safely stored, so the same changes can now go to the
+         permanent daily log. Deliberately not awaited: a slow or failed log
+         write must never hold up the next edit, and the queue inside takes
+         care of retrying. */
+      dailyLog.record(stamped.changes, syncNow(), signedInPerson());
+      if(stamped.entries.length) render();
     }catch(err){
       /* Nothing is lost — the edit is already saved on this device, and the next
          tick (or the next time the connection returns) sends it. */
@@ -1851,7 +2414,7 @@ const cloudSync = {
     this.stop();
     writeCloudConfig(cfg);
     this.rev = 0;
-    this.lastPushedBody = null;
+    this.agreed = null;
     this.pendingPush = false;
     this.setStatus('connecting');
     try{
@@ -1881,7 +2444,7 @@ const cloudSync = {
     this.stop();
     forgetCloudConfig();
     this.rev = 0;
-    this.lastPushedBody = null;
+    this.agreed = null;
     this.pendingPush = false;
     this.setStatus('off');
   },
@@ -1942,7 +2505,7 @@ const cloudSync = {
     this.stop();
     await this.resolveAccount();
     this.rev = 0;
-    this.lastPushedBody = null;
+    this.agreed = null;
     this.pendingPush = false;
     if(!this.isOn()){ this.setStatus('off'); render(); return; }
     this.setStatus('connecting');
@@ -2114,6 +2677,232 @@ const mySettings = {
   }
 };
 
+/* ========================= THE DAILY LOG =========================
+   WHAT THIS DOES
+   The family board holds the CURRENT state, plus an activity feed capped at 200
+   lines. That answers "what changed recently"; it cannot answer "what did we do
+   on the 4th of last month". So every change is also appended to a table that
+   is never trimmed, one row per change, and any day can be pulled back out as a
+   file.
+
+   WHY THE FILE IS NOT WRITTEN AS THE DAY GOES ON
+   A web page cannot write files to a disk by itself -- browsers do not allow it,
+   and they would not run at 11:59pm anyway unless somebody happened to have the
+   app open. So the rows go to the database as they happen, a scheduled job in
+   Postgres seals each day at 11:59pm in the family's own timezone, and the app
+   turns a sealed day into a real file when asked.
+
+   DEPENDS ON
+     fh_log, fh_log_day, fh_log_days, fh_sealed_day   in the setup SQL
+     cloudSync._rpc                                   makes the call
+     cloudSync.account                                must be a signed-in member
+     localStorage (LOG_QUEUE_KEY)                     holds changes not yet sent
+     stampBoard()                                     produces the change records
+     deviceId(), fmtDate()                            elsewhere in this file
+
+   USED BY
+     cloudSync.push()   hands over the changes after a save succeeds
+     the Family sync panel   for the per-day download
+
+   WHY A QUEUE
+   The log is written AFTER the board save succeeds, so it never claims a change
+   that was refused. If the connection drops in between, the change is in the
+   family board but not yet in the log, so it waits here and goes up on the next
+   attempt. Sending twice is harmless: every row carries a key the database
+   treats as unique, so a retry inserts nothing the second time. */
+
+const LOG_QUEUE_KEY  = 'fh-log-queue';
+const LOG_SEQ_KEY    = 'fh-log-seq';   // counts changes on this device, so no two share a key
+const LOG_QUEUE_MAX  = 4000;   // roughly three weeks of heavy use before the oldest is dropped
+const LOG_BATCH_MAX  = 500;    // the limit fh_log enforces, so the call cannot be refused for size
+const LOG_RETRY_MS   = 20000;  // a failed send waits this long rather than hammering a dead connection
+
+const dailyLog = {
+  _queue: null,
+  _seq: null,
+  _busy: false,
+  _retryTimer: null,
+  lastError: '',
+
+  /* Read lazily, so a device that never signs in never touches storage. */
+  queue(){
+    if(this._queue) return this._queue;
+    try{
+      const raw = localStorage.getItem(LOG_QUEUE_KEY);
+      this._queue = raw ? JSON.parse(raw) : [];
+    }catch(e){
+      /* An unreadable queue is not worth refusing to log over. Start clean and
+         say so, rather than throwing on every save from now on. */
+      console.warn('The log queue was unreadable and has been reset.', e);
+      this._queue = [];
+    }
+    if(!Array.isArray(this._queue)) this._queue = [];
+    return this._queue;
+  },
+  persist(){
+    try{ localStorage.setItem(LOG_QUEUE_KEY, JSON.stringify(this._queue || [])); }
+    catch(e){
+      /* Storage full. The queue still works for this session; it just will not
+         survive a reload. Logging is not worth losing an edit over, so this
+         never becomes an error the person has to deal with. */
+      console.warn('Could not store the log queue:', e.message);
+    }
+  },
+
+  /* The key the database uses to refuse a duplicate. It has to satisfy two
+     things at once: come out the SAME if this batch is sent twice, and come out
+     DIFFERENT for two separate changes -- including two identical ones a few
+     seconds apart, like ticking a habit, un-ticking it and ticking it again.
+
+     A number that only ever counts up on this device does both, because it is
+     fixed when the change is RECORDED, long before anything is sent. An earlier
+     version keyed on the minute plus what changed, which quietly dropped the
+     third of those three ticks. */
+  nextSeq(){
+    if(this._seq === null){
+      let stored = 0;
+      try{ stored = Number(localStorage.getItem(LOG_SEQ_KEY)) || 0; }
+      catch(e){ stored = 0; }
+      /* Storage unreadable: start from the clock rather than from zero. Reusing
+         numbers would make the database treat genuinely new changes as repeats
+         and throw them away, which is worse than a gap in the numbering. */
+      this._seq = stored > 0 ? stored : Date.now();
+    }
+    this._seq += 1;
+    try{ localStorage.setItem(LOG_SEQ_KEY, String(this._seq)); }
+    catch(e){ /* the in-memory counter still rises, so this session stays safe */ }
+    return this._seq;
+  },
+  keyFor(){ return deviceId() + '-' + this.nextSeq(); },
+
+  /* Turns the raw change records from stampBoard into log rows and queues them.
+     Called only after the board save succeeded. Every change is kept, including
+     the ones the visible feed leaves out -- habit ticks and chore ticks are
+     exactly the part worth studying later. */
+  record(changes, atMs, who){
+    if(!Array.isArray(changes) || !changes.length) return;
+    if(cloudSync.account.kind !== 'member') return;   // nowhere to send it, and no identity to attach
+    const q = this.queue();
+    const when = new Date(atMs);
+    const day = fmtDate(when);
+    const iso = when.toISOString();
+    const device = deviceId();
+    for(const c of changes){
+      if(c.path === 'activity') continue;             // logging the log is noise
+      q.push({
+        k: this.keyFor(),
+        day, at: iso,
+        by_name: (who && who.name) || '',
+        device,
+        path: c.path,
+        op: c.op,
+        item_id: String(c.id || ''),
+        item_name: String(c.name || ''),
+        n: Number(c.n) || 1,
+        detail: c.detail || null
+      });
+    }
+    /* Bounded on purpose. A device left offline for a month should not grow its
+       storage without limit; the oldest unsent rows go first. */
+    if(q.length > LOG_QUEUE_MAX) q.splice(0, q.length - LOG_QUEUE_MAX);
+    this.persist();
+    this.flush();
+  },
+
+  /* Sends what is queued, oldest first, in batches the database will accept.
+     Rows are only dropped from the queue once the database has confirmed them. */
+  async flush(){
+    if(this._busy) return;
+    if(cloudSync.account.kind !== 'member') return;
+    const q = this.queue();
+    if(!q.length) return;
+    this._busy = true;
+    clearTimeout(this._retryTimer);
+    try{
+      while(q.length){
+        const batch = q.slice(0, LOG_BATCH_MAX);
+        await cloudSync._rpc('fh_log', { entries: batch });
+        q.splice(0, batch.length);
+        this.persist();
+      }
+      this.lastError = '';
+    }catch(err){
+      /* Nothing is lost: the rows stay queued and go up on the next attempt.
+         The board itself already saved, so this never blocks the family. */
+      this.lastError = err.message || String(err);
+      console.warn('The daily log could not be written yet:', this.lastError);
+      this._retryTimer = setTimeout(()=>this.flush(), LOG_RETRY_MS);
+    }finally{
+      this._busy = false;
+    }
+  },
+
+  /* Which days have anything in them, newest first. */
+  async days(){
+    const rows = await cloudSync._rpc('fh_log_days', {});
+    return Array.isArray(rows) ? rows : [];
+  },
+
+  /* One day, as rows. Prefers the sealed copy -- the snapshot the scheduled job
+     took at 11:59pm that day -- and falls back to reading the live rows, which
+     is what today needs, because today has not been sealed yet. */
+  async day(dayStr){
+    const sealed = await cloudSync._rpc('fh_sealed_day', { d: dayStr });
+    if(sealed && Array.isArray(sealed.entries)) return { sealed: true, sealedAt: sealed.sealed_at, rows: sealed.entries };
+    const rows = await cloudSync._rpc('fh_log_day', { d: dayStr });
+    return { sealed: false, sealedAt: null, rows: Array.isArray(rows) ? rows : [] };
+  },
+
+  /* Builds the actual file and hands it to the browser's download. CSV, because
+     the point of this is to open it in a spreadsheet later. */
+  async download(dayStr, format){
+    const { sealed, sealedAt, rows } = await this.day(dayStr);
+    const body = format === 'json'
+      ? JSON.stringify({ day: dayStr, sealed, sealed_at: sealedAt, entries: rows }, null, 2)
+      : logRowsToCsv(rows);
+    const name = `family-hub-log-${dayStr}.${format === 'json' ? 'json' : 'csv'}`;
+    const blob = new Blob([body], { type: format === 'json' ? 'application/json' : 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    /* Released on the next turn of the event loop: revoking it immediately can
+       cancel the download on some browsers before it has started. */
+    setTimeout(()=>URL.revokeObjectURL(url), 10000);
+    return { name, rows: rows.length, sealed };
+  }
+};
+
+/* One row per change, with the item's own fields flattened into their own
+   columns so a spreadsheet can sort and total them without any unpacking. */
+function logRowsToCsv(rows){
+  const base = ['at','by_name','by_email','device','path','op','item_id','item_name','n'];
+  const extra = [];
+  for(const r of rows){
+    const d = r.detail;
+    if(d && typeof d === 'object'){
+      for(const k of Object.keys(d)) if(!extra.includes(k) && extra.length < 40) extra.push(k);
+    }
+  }
+  extra.sort();
+  const head = [...base, ...extra.map(k=>'detail.' + k)];
+  const cell = v=>{
+    if(v === null || v === undefined) return '';
+    const text = typeof v === 'object' ? JSON.stringify(v) : String(v);
+    /* Quote anything a spreadsheet would otherwise split or mangle, and double
+       any quote inside, which is what RFC 4180 asks for. */
+    return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+  };
+  const lines = [head.join(',')];
+  for(const r of rows){
+    const d = (r.detail && typeof r.detail === 'object') ? r.detail : {};
+    lines.push([...base.map(k=>cell(r[k])), ...extra.map(k=>cell(d[k]))].join(','));
+  }
+  return lines.join('\r\n');
+}
+
 function cloudStatusLabel(){
   switch(cloudSync.status){
     case 'live':       return '🟢 Syncing across every device';
@@ -2229,7 +3018,17 @@ function takeInviteFromHash(){
 }
 
 function personById(id){ return state.people.find(p=>p.id===id); }
-function pointsFor(id){ return state.points[id] || 0; }
+/* Points are kept as one tally per device and added up on read. A single
+   running total could only ever hold one answer, so two people awarding points
+   in the same minute meant one award was quietly dropped. A device only ever
+   writes its own tally, so there is nothing left to resolve when the copies
+   meet. See SYNC_SHAPE.counters. */
+function pointsFor(id){
+  const shards = (state.points && state.points.byDevice) || {};
+  let total = 0;
+  for(const shard of Object.values(shards)) total += Number(shard && shard[id]) || 0;
+  return total;
+}
 
 /* ---- Shared "Completed" drawer ----
    To-Dos and Habits both park finished items in the same collapsible
@@ -2285,7 +3084,12 @@ function clearCheckedFor(key){
   });
   return { gone, noun: gone===1 ? 'tick' : 'ticks' };
 }
-function addPoints(id, n){ state.points[id] = pointsFor(id) + n; }
+function addPoints(id, n){
+  if(!state.points || typeof state.points !== 'object') state.points = { byDevice:{} };
+  if(!state.points.byDevice) state.points.byDevice = {};
+  const mine = state.points.byDevice[deviceId()] || (state.points.byDevice[deviceId()] = {});
+  mine[id] = (Number(mine[id]) || 0) + n;     // this device's own tally only
+}
 
 /* ---- Event ownership ----
    An event carries a list of people. An EMPTY list means it belongs to the whole
@@ -6145,11 +6949,332 @@ begin
 end;
 $$;
 
+-- The two functions below replace fh_meta/fh_put for devices running the
+-- change-tracking build. They are NEW names rather than changes to the old
+-- ones so that a phone still showing the previous version of the page keeps
+-- working until it is reloaded.
+
+-- Same job as fh_meta, plus the server's own clock. Devices use that clock to
+-- stamp their edits, so a tablet whose date is a day out cannot win or lose
+-- every disagreement purely because of its clock. Returns NULL when this
+-- person is on no family list, or the family has no board yet -- the same two
+-- "nothing here" cases fh_meta signalled by returning no rows.
+create or replace function public.fh_meta_v2()
+returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  fid text;
+  r   record;
+begin
+  select m.family_id into fid from public.family_hub_members m where m.user_id = auth.uid();
+  if fid is null then return null; end if;
+  select s.rev, s.updated_at, s.updated_by into r
+    from public.family_hub_state s where s.family_id = fid;
+  if not found then return null; end if;
+  return jsonb_build_object('rev', r.rev, 'updated_at', r.updated_at,
+                            'updated_by', r.updated_by, 'server_now', now());
+end;
+$$;
+
+-- Writes the board, but only if nobody else has written since the copy this
+-- device was holding. The baserev argument is the revision the device last
+-- agreed with; if the stored revision has moved on, the write is REFUSED and
+-- the device is told so, rather than overwriting work it never saw. It then
+-- merges the newer copy with its own and tries again.
+--
+-- The for-update clause locks the row for the rest of the transaction.
+-- Without it two devices could both read the same revision, both pass the
+-- check, and the second write would still erase the first -- the exact bug
+-- this function exists to close, moved from seconds wide to milliseconds.
+create or replace function public.fh_put_v2(body text, baserev bigint, device text)
+returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  fid    text;
+  cur    bigint;
+  stored bigint;
+begin
+  select m.family_id into fid from public.family_hub_members m where m.user_id = auth.uid();
+  if fid is null then raise exception 'not on a family list' using errcode = '42501'; end if;
+
+  select s.rev into cur from public.family_hub_state s
+   where s.family_id = fid for update;
+
+  -- No board yet: this device seeds it. The on-conflict-do-nothing clause covers
+  -- two devices seeding at the same instant; the loser is told to merge instead.
+  if cur is null then
+    insert into public.family_hub_state (family_id, payload, rev, updated_by, updated_at)
+    values (fid, body, 1, device, now())
+    on conflict (family_id) do nothing;
+    if found then
+      return jsonb_build_object('rev', 1, 'conflict', false, 'server_now', now());
+    end if;
+    select s.rev into cur from public.family_hub_state s where s.family_id = fid;
+    return jsonb_build_object('rev', cur, 'conflict', true, 'server_now', now());
+  end if;
+
+  if baserev is null or cur <> baserev then
+    return jsonb_build_object('rev', cur, 'conflict', true, 'server_now', now());
+  end if;
+
+  update public.family_hub_state t
+     set payload = body, rev = t.rev + 1, updated_by = device, updated_at = now()
+   where t.family_id = fid
+  returning t.rev into stored;
+  return jsonb_build_object('rev', stored, 'conflict', false, 'server_now', now());
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- The daily log. The board holds only the CURRENT state plus a short activity
+-- feed, so it cannot answer "what happened on the 4th" a month later. This
+-- table keeps one row per change, for good, so usage can be studied later.
+--
+-- A browser cannot write files to a disk on its own, so the per-day file is
+-- produced on demand from these rows rather than written as the day goes on.
+--
+-- entry_key makes the insert idempotent. A phone that saves successfully but
+-- loses its connection before the log call lands will retry, and retrying must
+-- not double-count anything.
+create table if not exists family_hub_log (
+  id         bigint generated always as identity primary key,
+  family_id  text not null,
+  entry_key  text not null,
+  day        date not null,
+  at         timestamptz not null,
+  by_email   text,
+  by_name    text,
+  device     text,
+  path       text not null,
+  op         text not null,
+  item_id    text,
+  item_name  text,
+  n          integer not null default 1,
+  detail     jsonb,
+  unique (family_id, entry_key)
+);
+create index if not exists family_hub_log_day_idx on family_hub_log (family_id, day);
+-- Sealed off the same way as every other table here: the privilege is taken
+-- away outright, AND row level security is switched on with no policies, so a
+-- direct read is refused rather than quietly returning nothing. Supabase grants
+-- new tables to anon and authenticated by default, which is what makes the
+-- revoke necessary. Only the security definer functions below get in.
+alter table family_hub_log enable row level security;
+revoke all on table family_hub_log from anon, authenticated;
+
+-- Writes a batch of changes. The email is taken from the family list rather
+-- than from the caller, so a device cannot log a change as somebody else.
+create or replace function public.fh_log(entries jsonb)
+returns integer
+language plpgsql security definer set search_path = '' as $$
+declare
+  fid     text;
+  mail    text;
+  written integer;
+begin
+  select m.family_id, m.email into fid, mail
+    from public.family_hub_members m where m.user_id = auth.uid();
+  if fid is null then raise exception 'not on a family list' using errcode = '42501'; end if;
+  if entries is null or jsonb_typeof(entries) <> 'array' then
+    raise exception 'the log needs an array of entries';
+  end if;
+  if jsonb_array_length(entries) > 500 then
+    raise exception 'too many log entries in one call';
+  end if;
+
+  insert into public.family_hub_log
+    (family_id, entry_key, day, at, by_email, by_name, device, path, op, item_id, item_name, n, detail)
+  select fid,
+         e->>'k',
+         (e->>'day')::date,
+         (e->>'at')::timestamptz,
+         mail,
+         left(coalesce(e->>'by_name', ''), 80),
+         left(coalesce(e->>'device', ''), 80),
+         left(e->>'path', 80),
+         left(e->>'op', 16),
+         left(coalesce(e->>'item_id', ''), 120),
+         left(coalesce(e->>'item_name', ''), 200),
+         coalesce((e->>'n')::integer, 1),
+         e->'detail'
+    from jsonb_array_elements(entries) e
+   where e->>'k' is not null and e->>'path' is not null
+     and e->>'op' is not null and e->>'day' is not null and e->>'at' is not null
+  on conflict (family_id, entry_key) do nothing;
+  get diagnostics written = row_count;
+  return written;
+end;
+$$;
+
+-- One day of the log, for this person's family only. This is what the per-day
+-- file is built from.
+create or replace function public.fh_log_day(d date)
+returns table (at timestamptz, by_email text, by_name text, device text,
+               path text, op text, item_id text, item_name text, n integer, detail jsonb)
+language sql security definer set search_path = '' as $$
+  select l.at, l.by_email, l.by_name, l.device, l.path, l.op,
+         l.item_id, l.item_name, l.n, l.detail
+    from public.family_hub_log l
+    join public.family_hub_members m on m.family_id = l.family_id
+   where m.user_id = auth.uid() and l.day = d
+   order by l.at;
+$$;
+
+-- Which days have anything in them, newest first, so the app can offer a list
+-- to download instead of making someone guess a date.
+create or replace function public.fh_log_days()
+returns table (day date, entries bigint)
+language sql security definer set search_path = '' as $$
+  select l.day, count(*)
+    from public.family_hub_log l
+    join public.family_hub_members m on m.family_id = l.family_id
+   where m.user_id = auth.uid()
+   group by l.day
+   order by l.day desc
+   limit 400;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Sealing the day. A browser cannot be relied on to be awake at 11:59pm, so a
+-- scheduled job inside Postgres takes the snapshot instead. Each family is
+-- sealed at 11:59pm in ITS OWN timezone: the job runs every hour at minute 59
+-- and only acts on a family whose local hour is 23, which means daylight
+-- saving needs no maintenance here. See LOG_SCHEDULE_SQL for the schedule.
+alter table family_hub_state add column if not exists tz text;
+
+create table if not exists family_hub_log_sealed (
+  family_id text not null,
+  day       date not null,
+  sealed_at timestamptz not null default now(),
+  entries   integer not null,
+  doc       jsonb not null,
+  primary key (family_id, day)
+);
+alter table family_hub_log_sealed enable row level security;
+revoke all on table family_hub_log_sealed from anon, authenticated;
+
+-- Seals one family's one day. Writing it again is harmless: if the day has
+-- already been sealed with the same number of rows, nothing has changed and the
+-- function does nothing.
+create or replace function public.fh_seal_one(fid text, d date)
+returns integer
+language plpgsql security definer set search_path = '' as $$
+declare
+  cnt integer;
+  doc jsonb;
+begin
+  select count(*) into cnt from public.family_hub_log l
+   where l.family_id = fid and l.day = d;
+  if cnt = 0 then return 0; end if;
+  if exists (select 1 from public.family_hub_log_sealed z
+              where z.family_id = fid and z.day = d and z.entries = cnt) then
+    return 0;
+  end if;
+  select jsonb_agg(to_jsonb(x) order by x.at) into doc from (
+    select l.at, l.by_email, l.by_name, l.device, l.path, l.op,
+           l.item_id, l.item_name, l.n, l.detail
+      from public.family_hub_log l
+     where l.family_id = fid and l.day = d
+  ) x;
+  insert into public.family_hub_log_sealed (family_id, day, sealed_at, entries, doc)
+  values (fid, d, now(), cnt, coalesce(doc, '[]'::jsonb))
+  on conflict (family_id, day) do update
+    set sealed_at = now(), entries = excluded.entries, doc = excluded.doc;
+  return 1;
+end;
+$$;
+
+-- What the scheduled job calls. Not granted to anybody: it runs as the
+-- database owner from the schedule, never from a device.
+create or replace function public.fh_seal_days()
+returns integer
+language plpgsql security definer set search_path = '' as $$
+declare
+  fam      record;
+  localnow timestamp;
+  today    date;
+  n        integer := 0;
+begin
+  for fam in select s.family_id, coalesce(s.tz, 'America/Chicago') as tz
+               from public.family_hub_state s loop
+    begin
+      localnow := now() at time zone fam.tz;
+    exception when others then
+      -- One family with a mistyped timezone must not stop every other family
+      -- from being sealed.
+      localnow := now() at time zone 'America/Chicago';
+    end;
+    if extract(hour from localnow) <> 23 then continue; end if;
+    today := localnow::date;
+    n := n + public.fh_seal_one(fam.family_id, today);
+    -- Yesterday is refreshed too, which picks up anything written in the last
+    -- minute after it was sealed. Cheap, and it makes the snapshot exact
+    -- instead of nearly right.
+    n := n + public.fh_seal_one(fam.family_id, today - 1);
+  end loop;
+  return n;
+end;
+$$;
+
+-- The sealed snapshot of one day, for this person's family. The app prefers
+-- this over the live rows, and falls back to the live rows for today, which has
+-- not been sealed yet.
+create or replace function public.fh_sealed_day(d date)
+returns jsonb
+language sql security definer set search_path = '' as $$
+  select jsonb_build_object('day', z.day, 'sealed_at', z.sealed_at,
+                            'count', z.entries, 'entries', z.doc)
+    from public.family_hub_log_sealed z
+    join public.family_hub_members m on m.family_id = z.family_id
+   where m.user_id = auth.uid() and z.day = d;
+$$;
+
+-- Which timezone 11:59pm means for this family.
+create or replace function public.fh_set_tz(zone text)
+returns text
+language plpgsql security definer set search_path = '' as $$
+declare fid text;
+begin
+  select m.family_id into fid from public.family_hub_members m where m.user_id = auth.uid();
+  if fid is null then raise exception 'not on a family list' using errcode = '42501'; end if;
+  -- Refuse anything Postgres does not recognise, rather than storing a typo
+  -- that would quietly seal the day at the wrong hour for ever.
+  begin
+    perform now() at time zone zone;
+  exception when others then
+    raise exception 'that is not a timezone Postgres knows';
+  end;
+  update public.family_hub_state set tz = zone where family_id = fid;
+  return zone;
+end;
+$$;
+
+create or replace function public.fh_get_tz()
+returns text
+language sql security definer set search_path = '' as $$
+  select coalesce(s.tz, 'America/Chicago')
+    from public.family_hub_state s
+    join public.family_hub_members m on m.family_id = s.family_id
+   where m.user_id = auth.uid();
+$$;
+
 -- Signed-in members only. Supabase grants new functions to anon by default,
 -- so that grant is taken back explicitly.
 revoke all on function public.fh_me() from public, anon;
 revoke all on function public.fh_setup(text, text) from public, anon;
 revoke all on function public.fh_meta() from public, anon;
+revoke all on function public.fh_meta_v2() from public, anon;
+revoke all on function public.fh_log(jsonb) from public, anon;
+revoke all on function public.fh_sealed_day(date) from public, anon;
+revoke all on function public.fh_set_tz(text) from public, anon;
+revoke all on function public.fh_get_tz() from public, anon;
+-- The sealing functions run from the schedule as the database owner. No
+-- device ever calls them, so no device is allowed to.
+revoke all on function public.fh_seal_one(text, date) from public, anon, authenticated;
+revoke all on function public.fh_seal_days() from public, anon, authenticated;
+revoke all on function public.fh_log_day(date) from public, anon;
+revoke all on function public.fh_log_days() from public, anon;
+revoke all on function public.fh_put_v2(text, bigint, text) from public, anon;
 revoke all on function public.fh_get() from public, anon;
 revoke all on function public.fh_put(text, bigint, text) from public, anon;
 revoke all on function public.fh_members() from public, anon;
@@ -6160,6 +7285,14 @@ revoke all on function public.fh_put_settings(jsonb) from public, anon;
 grant execute on function public.fh_me() to authenticated;
 grant execute on function public.fh_setup(text, text) to authenticated;
 grant execute on function public.fh_meta() to authenticated;
+grant execute on function public.fh_meta_v2() to authenticated;
+grant execute on function public.fh_log(jsonb) to authenticated;
+grant execute on function public.fh_sealed_day(date) to authenticated;
+grant execute on function public.fh_set_tz(text) to authenticated;
+grant execute on function public.fh_get_tz() to authenticated;
+grant execute on function public.fh_log_day(date) to authenticated;
+grant execute on function public.fh_log_days() to authenticated;
+grant execute on function public.fh_put_v2(text, bigint, text) to authenticated;
 grant execute on function public.fh_get() to authenticated;
 grant execute on function public.fh_put(text, bigint, text) to authenticated;
 grant execute on function public.fh_members() to authenticated;
@@ -6179,6 +7312,29 @@ const FAMILY_LOCKDOWN_SQL = `-- Family Hub — finish the switch to Google sign-
 revoke execute on function public.family_hub_meta(text) from anon, authenticated;
 revoke execute on function public.family_hub_get(text) from anon, authenticated;
 revoke execute on function public.family_hub_put(text, text, bigint, text) from anon, authenticated;`;
+
+/* Turns on the 11:59pm seal. Run once, after the setup SQL. Kept separate
+   because it needs the pg_cron extension, which a Supabase project may have to
+   be told to enable in the dashboard first -- and because a failure here must
+   not stop the rest of the setup from going in. */
+const LOG_SCHEDULE_SQL = `-- Family Hub — seal each day's log at 11:59pm.
+-- Run this ONCE, after the main setup SQL.
+-- If the first line fails, turn pg_cron on in the Supabase dashboard under
+-- Database > Extensions, then run this again.
+create extension if not exists pg_cron;
+
+-- Every hour at minute 59. fh_seal_days only acts on a family whose own local
+-- hour is 23, so each family is sealed once a day at 11:59pm ITS time, and
+-- daylight saving needs no change here. Running hourly also means a missed run
+-- is not a lost day: the next hour picks it up.
+select cron.unschedule('family-hub-seal-day')
+ where exists (select 1 from cron.job where jobname = 'family-hub-seal-day');
+select cron.schedule('family-hub-seal-day', '59 * * * *', 'select public.fh_seal_days()');
+
+-- Check it took:
+--   select jobname, schedule, active from cron.job;
+-- And after a day or two, what it has sealed:
+--   select day, entries, sealed_at from family_hub_log_sealed order by day desc;`;
 
 let cloudFormOpen = false;
 let codeFormOpen = false;
@@ -6310,6 +7466,27 @@ function accountBlockHtml(){
     <p style="font-size:12px; color:var(--ink-soft); margin:0 0 6px;">Add each person's Google email. Only these accounts can open your family's board. Clear an email to take that person's access away.</p>
     ${list === null ? '<div style="font-size:12.5px; color:var(--ink-soft);">Loading the list…</div>' : personRows + looseRows}
     <div id="memberMsg" style="font-size:12px; margin-top:6px; min-height:15px;"></div>
+    <h4 style="font-size:13.5px; margin:16px 0 2px;">Recent activity</h4>
+    <p style="font-size:12px; color:var(--ink-soft); margin:0 0 6px;">Who changed what, on any device. The last ${ACTIVITY_MAX} changes are kept here; the complete record is in the daily log below.</p>
+    <div id="activityFeed" style="font-size:12.5px; line-height:1.7; max-height:200px; overflow:auto;">${activityFeedHtml()}</div>
+
+    <h4 style="font-size:13.5px; margin:16px 0 2px;">Daily log</h4>
+    <p style="font-size:12px; color:var(--ink-soft); margin:0 0 6px;">Every change is kept permanently, one row each. Each day is sealed at 11:59pm, and any day can be downloaded as a spreadsheet.</p>
+    <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+      <select id="logDay" style="max-width:220px;"><option value="">Loading days…</option></select>
+      <button class="btn btn-ghost" id="logCsv" style="font-size:12px;">⬇️ CSV</button>
+      <button class="btn btn-ghost" id="logJson" style="font-size:12px;">⬇️ JSON</button>
+    </div>
+    <div id="logMsg" style="font-size:12px; margin-top:6px; min-height:15px; color:var(--ink-soft);"></div>
+    <details style="margin-top:8px;">
+      <summary style="cursor:pointer; font-size:11.5px; color:var(--ink-soft);">Turn on the 11:59pm seal (run once)</summary>
+      <p style="font-size:12px; color:var(--ink-soft); line-height:1.5; margin:6px 0;">
+        Changes are logged as they happen either way. This schedules a job inside the database that takes a sealed snapshot of each day at 11:59pm, so a day can never be altered after the fact. It is separate because it needs the pg_cron extension turned on.
+      </p>
+      <button class="btn btn-ghost" id="acctCopySchedule" style="font-size:12px;">📋 Copy schedule SQL</button>
+      <pre style="font-size:11px; line-height:1.5; overflow:auto; background:rgba(0,0,0,0.05); padding:8px 10px; border-radius:8px; margin:6px 0 0;">${escapeHtml(LOG_SCHEDULE_SQL)}</pre>
+    </details>
+
     <details style="margin-top:8px;">
       <summary style="cursor:pointer; font-size:11.5px; color:var(--ink-soft);">Finish the switch, once everyone has signed in</summary>
       <p style="font-size:12px; color:var(--ink-soft); line-height:1.5; margin:6px 0;">
@@ -6318,6 +7495,45 @@ function accountBlockHtml(){
       <button class="btn btn-ghost" id="acctCopyLockdown" style="font-size:12px;">📋 Copy lockdown SQL</button>
       <pre style="font-size:11px; line-height:1.5; overflow:auto; background:rgba(0,0,0,0.05); padding:8px 10px; border-radius:8px; margin:6px 0 0;">${escapeHtml(FAMILY_LOCKDOWN_SQL)}</pre>
     </details>`);
+}
+
+/* ---- The activity feed, as the family reads it ----
+   Rendered straight from the board, so every device shows the same list without
+   another call to the database. The board keeps the last ACTIVITY_MAX lines;
+   anything older lives only in the daily log. */
+function activityFeedHtml(limit){
+  const feed = Array.isArray(state.activity) ? state.activity : [];
+  if(!feed.length){
+    return '<div style="color:var(--ink-soft);">Nothing yet. Changes will show up here as the family uses the app.</div>';
+  }
+  return feed.slice(0, limit || 25).map(e=>{
+    const who  = e.byName ? escapeHtml(e.byName) : 'Someone';
+    const verb = e.op === 'add' ? 'added' : e.op === 'remove' ? 'removed' : 'changed';
+    const n    = Number(e.n) || 1;
+    /* A collapsed line has no names on it -- one calendar import is "added 40
+       events", not forty lines. A single change names the thing itself. */
+    const what = e.name
+      ? escapeHtml(e.name) + ' <span style="color:var(--ink-soft);">(' + escapeHtml(e.noun || '') + ')</span>'
+      : n + ' ' + escapeHtml(pluralNoun(e.noun || 'things', n));
+    return '<div style="display:flex; gap:8px; align-items:baseline;">'
+         +   '<span style="color:var(--ink-soft); min-width:62px; font-variant-numeric:tabular-nums;">'
+         +     escapeHtml(activityWhen(e.at)) + '</span>'
+         +   '<span><strong>' + who + '</strong> ' + verb + ' ' + what + '</span>'
+         + '</div>';
+  }).join('');
+}
+function pluralNoun(noun, n){
+  if(n === 1) return noun;
+  if(noun === 'person') return 'people';
+  return noun + 's';
+}
+/* Today shows a clock time, in whichever format this person prefers; anything
+   older shows the date, because "3:40pm" on its own would be misleading. */
+function activityWhen(ms){
+  const when = new Date(Number(ms) || 0);
+  if(!Number.isFinite(when.getTime()) || !ms) return '';
+  if(fmtDate(when) !== fmtDate(new Date())) return fmtDate(when).slice(5);
+  return fmtTime(String(when.getHours()).padStart(2, '0') + ':' + String(when.getMinutes()).padStart(2, '0'));
 }
 
 /* Wires up whatever accountBlockHtml() drew. */
@@ -6334,6 +7550,60 @@ function attachAccountHandlers(setMsg){
 
   const signIn = document.getElementById('acctSignIn');
   if(signIn) signIn.onclick = ()=>startSignIn(signIn);
+
+  /* ---- Daily log ----
+     The day list comes from the database rather than from the board, because
+     the board only remembers the last 200 changes and the log remembers all of
+     them. Any change still waiting in this device's queue is sent first, so a
+     download is never missing what was just done. */
+  const logMsg = (text, bad)=>{
+    const el = document.getElementById('logMsg');
+    if(el){ el.style.color = bad ? 'var(--danger)' : 'var(--ink-soft)'; el.textContent = text; }
+  };
+  const logDay = document.getElementById('logDay');
+  if(logDay){
+    dailyLog.flush();
+    dailyLog.days()
+      .then(days=>{
+        if(!days.length){
+          logDay.innerHTML = '<option value="">Nothing logged yet</option>';
+          logMsg('Changes will appear here as the family uses the app.');
+          return;
+        }
+        logDay.innerHTML = days.map(d=>{
+          const n = Number(d.entries) || 0;
+          return '<option value="' + escapeHtml(d.day) + '">' + escapeHtml(d.day)
+               + '  (' + n + ' ' + (n === 1 ? 'change' : 'changes') + ')</option>';
+        }).join('');
+        logMsg(days.length + (days.length === 1 ? ' day' : ' days') + ' on record.');
+      })
+      .catch(err=>{
+        /* Almost always the setup SQL not having been run yet, so the message
+           says what to do rather than just reporting a failure. */
+        logDay.innerHTML = '<option value="">Unavailable</option>';
+        logMsg(err.message, true);
+      });
+  }
+  const download = (format, btn)=>busy(btn, async ()=>{
+    const day = logDay && logDay.value;
+    if(!day){ logMsg('Pick a day first.', true); return; }
+    await dailyLog.flush();
+    const res = await dailyLog.download(day, format);
+    logMsg('Saved ' + res.name + '  \u2014  ' + res.rows + (res.rows === 1 ? ' change' : ' changes')
+           + (res.sealed ? ', from the sealed snapshot.' : ', read live (this day is not sealed yet).'));
+    if(btn) btn.disabled = false;
+  });
+  const logCsv = document.getElementById('logCsv');
+  if(logCsv) logCsv.onclick = ()=>download('csv', logCsv);
+  const logJson = document.getElementById('logJson');
+  if(logJson) logJson.onclick = ()=>download('json', logJson);
+
+  const copySchedule = document.getElementById('acctCopySchedule');
+  if(copySchedule) copySchedule.onclick = ()=>busy(copySchedule, async ()=>{
+    await navigator.clipboard.writeText(LOG_SCHEDULE_SQL);
+    logMsg('Schedule SQL copied. Paste it into the Supabase SQL editor and press Run.');
+    copySchedule.disabled = false;
+  });
 
   const signOut = document.getElementById('acctSignOut');
   if(signOut) signOut.onclick = ()=>busy(signOut, async ()=>{
