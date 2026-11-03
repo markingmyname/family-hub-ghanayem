@@ -7494,6 +7494,17 @@ function accountBlockHtml(){
     </div>
     <div id="logMsg" style="font-size:12px; margin-top:6px; min-height:15px; color:var(--ink-soft);"></div>
     <details style="margin-top:8px;">
+      <summary style="cursor:pointer; font-size:11.5px; color:var(--ink-soft);">Update the setup SQL (after an app update)</summary>
+      <p style="font-size:12px; color:var(--ink-soft); line-height:1.5; margin:6px 0;">
+        An app update can add database functions. If syncing stops with a message about the setup SQL, copy it here and run it again — it is written to be safe to re-run, and it never touches your family's data.
+      </p>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn btn-ghost" id="acctCopySetup" style="font-size:12px;">📋 Copy SQL</button>
+        <button class="btn btn-ghost" id="acctOpenSetupSql" style="font-size:12px;">↗️ Open SQL editor</button>
+      </div>
+    </details>
+
+    <details style="margin-top:8px;">
       <summary style="cursor:pointer; font-size:11.5px; color:var(--ink-soft);">Turn on the 11:59pm seal (run once)</summary>
       <p style="font-size:12px; color:var(--ink-soft); line-height:1.5; margin:6px 0;">
         Changes are logged as they happen either way. This schedules a job inside the database that takes a sealed snapshot of each day at 11:59pm, so a day can never be altered after the fact. It is separate because it needs the pg_cron extension turned on.
@@ -7612,6 +7623,21 @@ function attachAccountHandlers(setMsg){
   if(logCsv) logCsv.onclick = ()=>download('csv', logCsv);
   const logJson = document.getElementById('logJson');
   if(logJson) logJson.onclick = ()=>download('json', logJson);
+
+  const copySetup = document.getElementById('acctCopySetup');
+  if(copySetup) copySetup.onclick = ()=>busy(copySetup, async ()=>{
+    await navigator.clipboard.writeText(CLOUD_SETUP_SQL);
+    memberMsg('Setup SQL copied. Paste it into the Supabase SQL editor and press Run.', true);
+    copySetup.disabled = false;
+  });
+  const openSetupSql = document.getElementById('acctOpenSetupSql');
+  if(openSetupSql) openSetupSql.onclick = ()=>{
+    /* Straight to a blank query against this project, rather than the
+       dashboard home, so there is nothing to navigate. */
+    const cfg = cloudConfig() || {};
+    const ref = String(cfg.url || DEFAULT_CLOUD_URL).replace(/^https?:\/\//, '').split('.')[0];
+    window.open('https://supabase.com/dashboard/project/' + encodeURIComponent(ref) + '/sql/new', '_blank', 'noopener');
+  };
 
   const copySchedule = document.getElementById('acctCopySchedule');
   if(copySchedule) copySchedule.onclick = ()=>busy(copySchedule, async ()=>{
