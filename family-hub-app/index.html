@@ -115,6 +115,15 @@
   }
   .avatar.sm{width:20px; height:20px; font-size:11px;}
   .avatar.lg{width:44px; height:44px; font-size:22px;}
+  /* Chess glyphs carry a lot of empty space above the baseline, so they are
+     set slightly larger and nudged up to look centred in the disc. */
+  .avatar.piece{font-size:1.15em; line-height:1; padding-bottom:2px;}
+  /* Signed out is hollow and grey so it reads as an empty slot rather than
+     a person. Signed in is a filled disc - the difference you can see from
+     across the kitchen without reading a tooltip. */
+  .avatar.signed-out{background:transparent; border:1.5px solid var(--line); color:var(--ink-soft);}
+  #accountBtn.signed-in{padding:2px;}
+  #accountBtn .avatar{display:inline-flex; align-items:center; justify-content:center;}
   .avatar img{width:100%; height:100%; object-fit:cover;}
 
   /* ---------- Modal ---------- */
@@ -1035,6 +1044,15 @@ function migrateState(s){
     if(!p.avatarType) p.avatarType = 'color';
     if(p.avatarEmoji===undefined) p.avatarEmoji='';
     if(p.avatarImage===undefined) p.avatarImage='';
+    if(p.avatarPiece===undefined) p.avatarPiece='';
+    /* Give the household its starting pieces once. Guarded on 'color', the
+       untouched default, so this can never replace an avatar somebody chose,
+       and guarded on avatarPiece so clearing it back to a plain colour sticks
+       instead of being re-applied on the next load. */
+    if(p.avatarType === 'color' && !p.avatarPiece){
+      const piece = defaultPieceFor(p.name);
+      if(piece){ p.avatarPiece = piece; p.avatarType = 'piece'; }
+    }
   });
   if(!s.habits) s.habits = { items: [], log: {} };
   if(!Array.isArray(s.habits.items)) s.habits.items = [];
@@ -2931,19 +2949,44 @@ function updateCloudIndicator(){
 
 /* Header account button: the signed-in person's avatar, or 👤 when nobody is
    signed in. Opens the sync panel, where signing in and out lives. */
+/* The classic empty-profile silhouette, drawn rather than taken from an emoji
+   so it inherits a colour and stays crisp at 20px. Shown when somebody is
+   signed in but has not yet said which person on the board they are. */
+const PERSON_SILHOUETTE = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="width:62%; height:62%;">'
+  + '<circle cx="12" cy="8" r="4"/><path d="M12 14c-4.4 0-8 2.9-8 6.5V22h16v-1.5C20 16.9 16.4 14 12 14z"/></svg>';
+
+/* The header button is the only thing that answers "am I signed in?" at a
+   glance, so the states have to LOOK different rather than only carry
+   different tooltips. Before this, signed out and signed in both rendered the
+   same person emoji, which is no answer at all.
+
+     signed out             hollow grey outline
+     signed in, no person   filled disc with the generic silhouette
+     signed in, a member    that person's own piece, in their own colour */
 function updateAccountButton(){
   const btn = document.getElementById('accountBtn');
   if(!btn) return;
   const acct = cloudSync.account;
+  const generic = tint=>`<span class="avatar sm" style="background:${tint}; color:#fff;">${PERSON_SILHOUETTE}</span>`;
+
   if(acct.kind === 'member'){
     const p = acct.personId && state ? personById(acct.personId) : null;
-    if(p) btn.innerHTML = avatarHtml(p, 'sm');
-    else btn.textContent = (acct.email || '?').charAt(0).toUpperCase();
-    btn.title = `Signed in as ${acct.email}${p ? ' (' + p.name + ')' : ''}`;
-  }else{
-    btn.textContent = '👤';
-    btn.title = auth.isSignedIn() ? `Signed in as ${auth.email()} — not on a family list yet` : 'Sign in with Google';
+    btn.innerHTML = p ? avatarHtml(p, 'sm') : generic('var(--board)');
+    btn.title = `Signed in as ${acct.email}${p ? ' (' + p.name + ')' : ' — tap to say who you are'}`;
+    btn.classList.add('signed-in');
+    return;
   }
+  if(auth.isSignedIn()){
+    /* Signed in with Google but not on the family list. That is a real state,
+       and a different one from signed out, so it gets its own colour. */
+    btn.innerHTML = generic('var(--mustard)');
+    btn.title = `Signed in as ${auth.email()} — not on a family list yet`;
+    btn.classList.add('signed-in');
+    return;
+  }
+  btn.classList.remove('signed-in');
+  btn.innerHTML = `<span class="avatar sm signed-out">${PERSON_SILHOUETTE}</span>`;
+  btn.title = 'Sign in with Google';
 }
 
 /* Starts Google sign-in from any button. On success the page leaves for Google,
@@ -3135,6 +3178,30 @@ function eventPeopleLabel(e){
 }
 
 /* ---- Avatar rendering ---- */
+/* Chess pieces as avatars. The SOLID glyphs are used rather than the outline
+   ones because an outline piece turns into a grey smudge at 20px in the header.
+   They are ordinary text characters, so they take the person's own colour -- a
+   pink queen is a queen drawn in pink, not a black queen on a pink disc, which
+   is all the emoji avatar type could manage. */
+const CHESS_PIECES = { king:'♚', queen:'♛', rook:'♜', bishop:'♝', knight:'♞', pawn:'♟' };
+
+/* Who starts as what. Applied only to a person still on the untouched default
+   avatar, so nobody's chosen photo or emoji is ever overwritten. Matched on
+   name because that is what the household recognises; spellings people
+   actually use are all listed rather than guessed at. */
+const DEFAULT_PIECES = [
+  { match: ['mom', 'mum', 'katie', 'katherine', 'kathy'], piece: 'queen'  },
+  { match: ['dad', 'mark', 'markg'],                      piece: 'king'   },
+  { match: ['kingston'],                                  piece: 'knight' },
+  { match: ['maddox', 'maddix', 'maddixx', 'madox'],      piece: 'knight' }
+];
+function defaultPieceFor(name){
+  const n = String(name || '').trim().toLowerCase();
+  if(!n) return '';
+  const hit = DEFAULT_PIECES.find(d=>d.match.some(m=>n === m || n.startsWith(m + ' ')));
+  return hit ? hit.piece : '';
+}
+
 function avatarHtml(p, size){
   const cls = 'avatar' + (size?(' '+size):'');
   if(p.avatarType==='image' && p.avatarImage){
@@ -3142,6 +3209,12 @@ function avatarHtml(p, size){
   }
   if(p.avatarType==='emoji' && p.avatarEmoji){
     return `<span class="${cls}" style="background:${p.color}22;">${p.avatarEmoji}</span>`;
+  }
+  /* The piece is drawn in the person's own colour on a soft wash of the same
+     colour, so it stays legible on both the light and dark backgrounds the
+     avatar appears against. */
+  if(p.avatarType==='piece' && CHESS_PIECES[p.avatarPiece]){
+    return `<span class="${cls} piece" style="background:${p.color}22; color:${p.color};">${CHESS_PIECES[p.avatarPiece]}</span>`;
   }
   return `<span class="${cls}" style="background:${p.color};"></span>`;
 }
