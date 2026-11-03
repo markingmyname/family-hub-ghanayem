@@ -5097,17 +5097,32 @@ function defaultHousekeeping(){
       ['Water the plants',3,1],['Bins out to the curb',7,1],['Sweep the porch',14,2],['Mow the lawn',10,4]
     ]]
   ];
+  /* The ids are worked out from the names rather than generated at random,
+     because they have to come out the SAME on every device. Two devices that
+     both seed this plan used to produce two sets of the same jobs with
+     different ids, and the merge -- which has no way to tell they are the same
+     job -- kept both, handing the family 72 cleaning jobs instead of 36. The
+     task id carries its area because names repeat: Vacuum and Mop the floor
+     each appear in more than one room. */
+  const hkId = text => String(text).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  /* A small, stable number from a piece of text. Not a security hash -- it
+     only has to spread the jobs out and give the same answer everywhere. */
+  const hkSpread = text => { let h = 0; for(let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) | 0; return Math.abs(h); };
   const areas = [], tasks = [];
   plan.forEach(([name, icon, color, jobs])=>{
-    const areaId = uid();
+    const areaId = 'hk-' + hkId(name);
     areas.push({id:areaId, name, icon, color});
     jobs.forEach(([taskName, freqDays, effort])=>{
       /* Stagger the starting point somewhere inside each interval, so a new
-         plan reads like a lived-in house rather than 36 alarms at once. */
-      const back = Math.floor(Math.random() * freqDays);
+         plan reads like a lived-in house rather than 36 alarms at once. The
+         offset is derived from the job's own name instead of being drawn at
+         random, for the same reason the ids are: two devices seeding this plan
+         have to produce the SAME rows, or the merge sees 21 jobs that disagree
+         about when they were last done and records 21 changes nobody made. */
+      const back = hkSpread(areaId + taskName) % freqDays;
       const seeded = new Date();
       seeded.setDate(seeded.getDate() - back);
-      tasks.push({id:uid(), areaId, name:taskName, freqDays, effort, lastDone:fmtDate(seeded), personId:'', paused:false});
+      tasks.push({id:areaId + '--' + hkId(taskName), areaId, name:taskName, freqDays, effort, lastDone:fmtDate(seeded), personId:'', paused:false});
     });
   });
   return { areas, tasks, log: [] };
