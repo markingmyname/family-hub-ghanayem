@@ -3080,30 +3080,73 @@ async function startSignIn(btn){
    who?" is a question the dashboard should answer without anyone opening a
    panel or hovering a tooltip.
 
-   Signing in happens in ONE place now: the Family sync panel. This strip used
-   to carry its own Sign in with Google button, which meant two routes into the
-   same flow and two things to keep in step. Every state here opens the panel
-   instead. */
+   Signing in happens in ONE place: THIS strip. It is the only surface in the app that offers a Sign in with Google button. Every other surface either reports state or links here -- none of them carries a second button, and none of them tells you to go and find one somewhere else.
+
+   The strip used to send you to the Family sync panel to press the real
+   button. A signpost pointing at a signpost is what made this confusing, so the button now starts the sign-in itself.
+
+   Signed in, the strip stops asking for anything and becomes the sync
+   readout: the real date and time the board last agreed with the server, plus a Refresh that forces a round trip now.
+
+   DEPENDS ON
+     startSignIn()         the shared sign-in starter, wired in at #bannerSignIn
+     cloudLastSyncStamp()  absolute timestamp, defined just below
+     cloudSync.account     the four account states this switches on
+     cloudSync.isOn()      true when EITHER signed in or on a family code */
+     
 function accountStripHtml(){
   const acct = cloudSync.account;
-  const strip = (body, label, muted)=>`<div style="background:${muted ? 'transparent' : 'var(--paper-2)'}; border:1px solid var(--line); border-radius:12px; padding:${muted ? '7px 12px' : '10px 14px'}; margin-bottom:12px; font-size:${muted ? '12.5px' : '13.5px'}; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
-      <span style="display:flex; align-items:center; gap:7px;">${body}</span>
-      <button class="btn ${muted ? 'btn-ghost' : 'btn-primary'}" id="bannerOpenSync" style="${muted ? 'font-size:12px;' : ''}">${label}</button></div>`;
+  const strip = (body, buttons, muted)=>`<div style="background:${muted ? 'transparent' : 'var(--paper-2)'}; border:1px solid var(--line); border-radius:12px; padding:${muted ? '7px 12px' : '10px 14px'}; margin-bottom:12px; font-size:${muted ? '12.5px' : '13.5px'}; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+      <span style="display:flex; align-items:center; gap:7px; flex-wrap:wrap;">${body}</span>
+      <span style="display:flex; align-items:center; gap:6px;">${buttons}</span></div>`;
+  const btn = (id, label, kind)=>`<button class="btn ${kind}" id="${id}" style="font-size:12px;">${label}</button>`;
+
+  /* A Refresh button is useless without this: "it says Refresh" tells you
+     nothing about whether the last one worked. */
+  const readout = `<span style="color:var(--ink-soft);">· Last sync</span> <strong>${escapeHtml(cloudLastSyncStamp())}</strong>`;
+  const refreshBtn = btn('bannerRefresh', '🔄 Refresh', 'btn-ghost');
 
   if(acct.kind === 'member'){
     const p = acct.personId && state ? personById(acct.personId) : null;
-    if(p) return strip(`${avatarHtml(p, 'sm')} <span style="color:var(--ink-soft);">Signed in as</span> <strong>${escapeHtml(p.name)}</strong>`, 'Family sync', true);
-    return strip(`<span style="color:var(--ink-soft);">Signed in as</span> <strong>${escapeHtml(acct.email)}</strong> <span style="color:var(--ink-soft);">— say which person you are</span>`, 'Family sync', false);
+    if(p) return strip(`${avatarHtml(p, 'sm')} <span style="color:var(--ink-soft);">Signed in as</span> <strong>${escapeHtml(p.name)}</strong> ${readout}`,
+                       refreshBtn + btn('bannerOpenSync', 'Family sync', 'btn-ghost'), true);
+    return strip(`<span style="color:var(--ink-soft);">Signed in as</span> <strong>${escapeHtml(acct.email)}</strong> <span style="color:var(--ink-soft);">— say which person you are</span>`,
+                 btn('bannerOpenSync', 'Family sync', 'btn-primary'), false);
   }
   if(acct.kind === 'no-family'){
-    return strip(`You're signed in as <strong>${escapeHtml(auth.email())}</strong>, but that account isn't on your family's list yet.`, 'Finish setting up', false);
+    return strip(`You're signed in as <strong>${escapeHtml(auth.email())}</strong>, but that account isn't on your family's list yet.`,
+                 btn('bannerOpenSync', 'Finish setting up', 'btn-primary'), false);
   }
   if(acct.kind === 'checking'){
     /* Signed in, but the family list has not answered yet. Saying so beats
        showing "not signed in" and sending someone to sign in a second time. */
-    return strip(`<span style="color:var(--ink-soft);">Checking your family list…</span>`, 'Family sync', true);
+    return strip(`<span style="color:var(--ink-soft);">Checking your family list…</span>`,
+                 btn('bannerOpenSync', 'Family sync', 'btn-ghost'), true);
   }
-  return strip(`👋 <strong>Not signed in.</strong> <span style="color:var(--ink-soft);">Sign in with Google in Family sync to see your family's board and have your own settings follow you.</span>`, 'Open Family sync', false);
+  /* Signed out, but already syncing on a family code: the board is NOT stuck.
+     Saying "Not signed in" and nothing else would read as "nothing works",
+     which is the opposite of true, and would send someone chasing a sync
+     problem they do not have. */
+  if(cloudSync.isOn()){
+    return strip(`<span style="color:var(--ink-soft);">Syncing on this family's code.</span> ${readout}`,
+                 refreshBtn + btn('bannerSignIn', 'Sign in with Google', 'btn-primary'), true);
+  }
+  return strip(`👋 <strong>Not signed in.</strong> <span style="color:var(--ink-soft);">Sign in once and your family's board, changes and settings follow you to every device.</span>`,
+               btn('bannerSignIn', 'Sign in with Google', 'btn-primary'), false);
+}
+
+/* The real date and time of the last agreed sync, for the dashboard strip.
+   cloudAgoLabel() below returns "5 minutes ago", which cannot tell you whether
+   sync stopped twenty minutes ago or last Tuesday -- exactly the question you
+   are asking when you suspect it is broken. Honours the 12/24-hour setting. */
+function cloudLastSyncStamp(){
+  if(!cloudSync.lastSyncAt) return 'never';
+  const d = new Date(cloudSync.lastSyncAt);
+  const time = d.toLocaleTimeString([], { hour:'numeric', minute:'2-digit', hour12: !use24h() });
+  /* Today needs no date; any other day needs one, or "2:47 PM" is a lie by
+     omission about a board that last synced on Tuesday. */
+  if(fmtDate(d) === todayStr()) return `${time} today`;
+  return `${time}, ${d.toLocaleDateString([], { month:'short', day:'numeric' })}`;
 }
 
 function cloudAgoLabel(){
@@ -5882,7 +5925,12 @@ function renderSettings(){
   const familySyncNote = cloudSync.mode() === 'member'
     ? `Signed in as <strong>${escapeHtml(cloudSync.account.email)}</strong>. Your family's board syncs to every device, and these settings follow you to any device you sign in on. Status: <strong>${cloudStatusLabel()}</strong>.`
     : cloudSync.isOn()
-    ? `Cleaning jobs, to-dos, habits, points and meals are syncing through your cloud database, so every device shows the same board. Status: <strong>${cloudStatusLabel()}</strong>. <strong>Sign in with Google</strong> (👤 at the top) so your settings follow you.`
+    /* Deliberately does NOT name a second place to sign in. This line used to
+       send people to the 👤 button at the top while the Home strip sent them
+       to the sync panel -- two routes described for one flow, which is what
+       made it unclear which one was real. Sign-in lives on the Home strip and
+       nowhere else; this only reports where the data stands. */
+    ? `Cleaning jobs, to-dos, habits, points and meals are syncing through your cloud database, so every device shows the same board. Status: <strong>${cloudStatusLabel()}</strong>. Sign in with Google on the <strong>Home</strong> screen so your settings follow you too.`
     : usingLocalFallback
       ? `⚠️ This copy is saving data <strong>on this device/browser only</strong>. Connect a small free cloud database and every phone, tablet and computer shows the same board — about five minutes, once. After that, one button hands the settings to your other devices in a link.`
       : `This copy already syncs across every device that opens this link, so a cloud database is optional here.`;
@@ -7569,8 +7617,7 @@ function accountBlockHtml(){
 
   if(acct.kind === 'signed-out'){
     return wrap(`
-      <p style="font-size:13px; margin:0 0 8px;"><strong>Sign in with Google</strong> — everyone uses their own account.</p>
-      <button class="btn btn-primary" id="acctSignIn">Sign in with Google</button>
+      <p style="font-size:13px; margin:0 0 8px;">Everyone signs in with their own Google account. The <strong>Sign in with Google</strong> button is on the <strong>Home</strong> screen — this panel deliberately does not carry a second one, so there is never a question of which is the real one.</p>
       <details style="margin-top:10px;">
         <summary style="cursor:pointer; font-size:11.5px; color:var(--ink-soft);">Setting up sign-in for the first time?</summary>
         <ol style="font-size:12px; color:var(--ink-soft); line-height:1.6; margin:6px 0 0; padding-left:18px;">
@@ -7750,8 +7797,9 @@ function attachAccountHandlers(setMsg){
     catch(err){ if(btn) btn.disabled = false; setMsg((err && err.message) || 'That didn\'t work.', false); }
   };
 
-  const signIn = document.getElementById('acctSignIn');
-  if(signIn) signIn.onclick = ()=>startSignIn(signIn);
+  /* No #acctSignIn here any more: the panel no longer carries a Sign in
+     button. The app's only one is #bannerSignIn on the Home strip. If a second
+     sign-in entry point is ever added, wire it there, not here. */
 
   /* ---- Daily log ----
      The day list comes from the database rather than from the board, because
@@ -9050,6 +9098,37 @@ function attachHandlers(){
   if(familySyncBtn) familySyncBtn.onclick = familySyncModal;
   const bannerOpenSync = document.getElementById('bannerOpenSync');
   if(bannerOpenSync) bannerOpenSync.onclick = familySyncModal;
+
+  /* The app's only Sign in with Google button. startSignIn() navigates away to
+     Google, so nothing after the click handler runs on this page load. */
+  const bannerSignIn = document.getElementById('bannerSignIn');
+  if(bannerSignIn) bannerSignIn.onclick = ()=>startSignIn(bannerSignIn);
+
+  /* Forces the round trip the 2.5-second poll makes anyway, so someone who
+     suspects sync is stuck can settle it either way in one press.
+
+     Pushes BEFORE pulling: an edit of your own still waiting to go up is the
+     likeliest reason the other device has not seen it, and pulling first would
+     report "up to date" while your change sat in the queue. */
+  const bannerRefresh = document.getElementById('bannerRefresh');
+  if(bannerRefresh) bannerRefresh.onclick = async ()=>{
+    bannerRefresh.disabled = true;
+    bannerRefresh.textContent = '🔄 Checking…';
+    try{
+      if(cloudSync.pendingPush) await cloudSync.push();
+      const result = await cloudSync.pull(false);
+      if(result === 'empty') await cloudSync.push();        // first device seeds the row
+      toast(result === 'applied' ? 'Picked up newer changes from another device.' : 'Already up to date.', 'success');
+    }catch(err){
+      /* A failed refresh is the whole signal the button was pressed for, so it
+         is surfaced rather than swallowed back into a silent idle state. */
+      toast((err && err.message) || 'Sync failed.', 'error');
+    }finally{
+      /* Redraws the strip with the new timestamp, which also rebuilds this
+         button in its enabled state -- no manual re-enable to forget. */
+      render();
+    }
+  };
   const timeFormatSel = document.getElementById('timeFormatSel');
   if(timeFormatSel) timeFormatSel.onchange = ()=>{
     state.timeFormat = timeFormatSel.value === '24h' ? '24h' : '12h';
