@@ -1,2 +1,10 @@
 # Browser-automation scratch output — console logs, downloads, traces.
 .playwright-mcp/
+
+# Private project notes and context exports. This repository is PUBLIC and is
+# also the source GitHub Pages publishes from, so anything committed here is
+# readable by anyone. These files describe the Supabase project, the shared
+# calendar, and where the app's security is weak, so they stay on disk only.
+outside data/
+**/outside data/
+*context-export*.md
