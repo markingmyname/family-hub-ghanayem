@@ -620,8 +620,11 @@
       <h1>🏡 Family Hub</h1>
     </div>
     <div class="header-actions">
+      <!-- No cloud icon here. Sync state is reported on the Home strip, as a
+           real date and time with a Refresh beside it, which says strictly
+           more than a tinted emoji could. A second indicator in the header
+           meant two places to look and two things to keep in step. -->
       <button class="icon-btn" id="accountBtn" title="Sign in with Google">👤</button>
-      <button class="icon-btn" id="cloudBtn" title="Family sync" style="opacity:0.45;">☁️</button>
       <button class="icon-btn" id="screensaverBtn" title="Screensaver">🌙</button>
       <button class="icon-btn" id="settingsBtn" title="Settings">⚙️</button>
     </div>
@@ -2171,7 +2174,9 @@ const cloudSync = {
     }
     this.status = status;
     this.detail = detail || '';
-    updateCloudIndicator();
+    /* No header icon to repaint any more. The status still reaches the person
+       through cloudStatusLabel() on the sync panel and in Settings, and
+       through the Last sync stamp on the Home strip. */
     renderCloudBlock();          // no-op unless the sync panel happens to be open
   },
 
@@ -3003,21 +3008,11 @@ function cloudStatusLabel(){
   }
 }
 
-function updateCloudIndicator(){
-  const btn = document.getElementById('cloudBtn');
-  if(!btn) return;
-  const looks = {
-    live:       { icon:'☁️', title:'Family sync: live on every device' },
-    connecting: { icon:'🔄', title:'Family sync: connecting…' },
-    offline:    { icon:'📴', title:'Family sync: offline — changes go up when the connection returns' },
-    error:      { icon:'⚠️', title:'Family sync: ' + (cloudSync.detail || 'something went wrong') },
-    off:        { icon:'☁️', title:'Family sync: not set up — this device only' }
-  };
-  const look = looks[cloudSync.status] || looks.off;
-  btn.textContent = look.icon;
-  btn.title = look.title;
-  btn.style.opacity = cloudSync.status === 'off' ? '0.45' : '1';
-}
+/* updateCloudIndicator() was removed with the header's cloud icon. Sync state
+   now reaches the person in two better places: cloudStatusLabel() in words on
+   the sync panel and in Settings, and the Last sync date and time on the
+   refresh bar at the top of every tab. Do not reintroduce a header icon --
+   a second indicator is a second thing to keep in step. */
 
 /* Header account button: the signed-in person's avatar, or 👤 when nobody is
    signed in. Opens the sync panel, where signing in and out lives. */
@@ -3101,15 +3096,14 @@ function accountStripHtml(){
       <span style="display:flex; align-items:center; gap:6px;">${buttons}</span></div>`;
   const btn = (id, label, kind)=>`<button class="btn ${kind}" id="${id}" style="font-size:12px;">${label}</button>`;
 
-  /* A Refresh button is useless without this: "it says Refresh" tells you
-     nothing about whether the last one worked. */
-  const readout = `<span style="color:var(--ink-soft);">· Last sync</span> <strong>${escapeHtml(cloudLastSyncStamp())}</strong>`;
-  const refreshBtn = btn('bannerRefresh', '🔄 Refresh', 'btn-ghost');
+  /* No Refresh button and no Last sync stamp here any more: the refresh bar
+     at the top of every tab carries both, this screen included. Two Refresh
+     buttons on Home would be the same duplication the strip was built to end. */
 
   if(acct.kind === 'member'){
     const p = acct.personId && state ? personById(acct.personId) : null;
-    if(p) return strip(`${avatarHtml(p, 'sm')} <span style="color:var(--ink-soft);">Signed in as</span> <strong>${escapeHtml(p.name)}</strong> ${readout}`,
-                       refreshBtn + btn('bannerOpenSync', 'Family sync', 'btn-ghost'), true);
+    if(p) return strip(`${avatarHtml(p, 'sm')} <span style="color:var(--ink-soft);">Signed in as</span> <strong>${escapeHtml(p.name)}</strong>`,
+                       btn('bannerOpenSync', 'Family sync', 'btn-ghost'), true);
     return strip(`<span style="color:var(--ink-soft);">Signed in as</span> <strong>${escapeHtml(acct.email)}</strong> <span style="color:var(--ink-soft);">— say which person you are</span>`,
                  btn('bannerOpenSync', 'Family sync', 'btn-primary'), false);
   }
@@ -3128,8 +3122,8 @@ function accountStripHtml(){
      which is the opposite of true, and would send someone chasing a sync
      problem they do not have. */
   if(cloudSync.isOn()){
-    return strip(`<span style="color:var(--ink-soft);">Syncing on this family's code.</span> ${readout}`,
-                 refreshBtn + btn('bannerSignIn', 'Sign in with Google', 'btn-primary'), true);
+    return strip(`<span style="color:var(--ink-soft);">Syncing on this family's code.</span>`,
+                 btn('bannerSignIn', 'Sign in with Google', 'btn-primary'), true);
   }
   return strip(`👋 <strong>Not signed in.</strong> <span style="color:var(--ink-soft);">Sign in once and your family's board, changes and settings follow you to every device.</span>`,
                btn('bannerSignIn', 'Sign in with Google', 'btn-primary'), false);
@@ -3147,6 +3141,79 @@ function cloudLastSyncStamp(){
      omission about a board that last synced on Tuesday. */
   if(fmtDate(d) === todayStr()) return `${time} today`;
   return `${time}, ${d.toLocaleDateString([], { month:'short', day:'numeric' })}`;
+}
+
+/* The refresh bar. render() puts this at the top of EVERY tab, so Refresh is
+   never more than one look away no matter which screen someone is on.
+
+   Built once and prepended in render() rather than copied into the seven
+   render functions: a per-screen copy means seven places to keep in step, and
+   a new tab added later would silently ship without one.
+
+   The Last sync stamp travels with the button on purpose. A Refresh button on
+   its own cannot tell you whether the last one worked, which is the actual
+   question being asked when somebody presses it. */
+function refreshBarHtml(){
+  const status = cloudSync.isOn()
+    ? `<span style="color:var(--ink-soft);">Last sync</span> <strong>${escapeHtml(cloudLastSyncStamp())}</strong>`
+    : `<span style="color:var(--ink-soft);">Not syncing — this device only</span>`;
+  return `<div style="display:flex; align-items:center; justify-content:flex-end; gap:8px; margin:0 0 10px; font-size:12.5px; flex-wrap:wrap;">
+      ${status}
+      <button class="btn btn-ghost" id="appRefresh" style="font-size:12px;">🔄 Refresh</button>
+    </div>`;
+}
+
+/* Brings EVERY source the app displays up to date, from whichever tab the
+   button was pressed on. The board is the point of it, so that one reports
+   its result; the rest are best-effort.
+
+   ORDER MATTERS. The push goes first: an edit of your own still queued is the
+   likeliest reason another device has not seen it, and pulling first would
+   report "already up to date" while your change sat in the queue.
+
+   Each secondary source is wrapped on its own so one broken thing cannot stop
+   the others -- an expired Google Calendar token must not prevent the family
+   board from refreshing. All three guard themselves internally too
+   (mySettings.pull returns unless signed in, googleAutoPull unless a calendar
+   is connected, refreshWeather unless a location is set), so calling them
+   unconditionally is safe.
+
+   DEPENDS ON
+     cloudSync.push/pull   the family board
+     mySettings.pull()     this person's own settings, from another device
+     googleAutoPull()      connected Google calendars
+     refreshWeather(true)  forces past the weather cache */
+async function refreshEverything(btn){
+  if(btn){ btn.disabled = true; btn.textContent = '🔄 Checking…'; }
+
+  let message = 'Already up to date.';
+  let kind = 'success';
+
+  if(cloudSync.isOn()){
+    try{
+      if(cloudSync.pendingPush) await cloudSync.push();
+      const result = await cloudSync.pull(false);
+      if(result === 'empty') await cloudSync.push();        // first device seeds the row
+      if(result === 'applied') message = 'Picked up newer changes from another device.';
+    }catch(err){
+      /* A failed refresh is the whole signal the button was pressed for, so it
+         is surfaced rather than swallowed back into a silent idle state. */
+      message = (err && err.message) || 'Sync failed.';
+      kind = 'error';
+    }
+  }else{
+    message = 'This device is not syncing yet — sign in on the Home screen.';
+    kind = 'error';
+  }
+
+  try{ await mySettings.pull(); }  catch(e){ console.warn('Personal settings did not refresh:', e.message); }
+  try{ await googleAutoPull(); }   catch(e){ console.warn('Calendars did not refresh:', e.message); }
+  try{ refreshWeather(true); }     catch(e){ console.warn('Weather did not refresh:', e.message); }
+
+  toast(message, kind);
+  /* Redraws the current tab with the new data and the new timestamp, which
+     also rebuilds this button enabled -- no manual re-enable to forget. */
+  render();
 }
 
 function cloudAgoLabel(){
@@ -3767,15 +3834,20 @@ document.getElementById('settingsBtn').addEventListener('click', ()=>gotoTab('se
 function render(){
   const main = document.getElementById('mainContent');
   try{
-    if(activeTab==='dashboard') main.innerHTML = renderDashboard();
-    else if(activeTab==='calendar') main.innerHTML = renderCalendar();
-    else if(activeTab==='housekeeping') main.innerHTML = renderHousekeeping();
-    else if(activeTab==='todos') main.innerHTML = renderTodos();
-    else if(activeTab==='habits') main.innerHTML = renderHabits();
-    else if(activeTab==='rewards') main.innerHTML = renderRewards();
-    else if(activeTab==='meals') main.innerHTML = renderMeals();
-    else if(activeTab==='settings') main.innerHTML = renderSettings();
-    else { activeTab='dashboard'; main.innerHTML = renderDashboard(); } // catch-all for any unknown view
+    /* Each view builds its own HTML, then the refresh bar is prepended ONCE
+       below. Assigning innerHTML per branch is what would let a tab added
+       later ship without a Refresh button; this way it cannot. */
+    let view;
+    if(activeTab==='dashboard') view = renderDashboard();
+    else if(activeTab==='calendar') view = renderCalendar();
+    else if(activeTab==='housekeeping') view = renderHousekeeping();
+    else if(activeTab==='todos') view = renderTodos();
+    else if(activeTab==='habits') view = renderHabits();
+    else if(activeTab==='rewards') view = renderRewards();
+    else if(activeTab==='meals') view = renderMeals();
+    else if(activeTab==='settings') view = renderSettings();
+    else { activeTab='dashboard'; view = renderDashboard(); } // catch-all for any unknown view
+    main.innerHTML = refreshBarHtml() + view;
     attachHandlers();
     updateAccountButton();   // a renamed person or new avatar shows in the header too
   }catch(err){
@@ -8323,10 +8395,10 @@ function cloudInviteModal(cfg){
 }
 
 async function initCloudSync(){
-  updateCloudIndicator();
-  const cloudBtn = document.getElementById('cloudBtn');
-  if(cloudBtn) cloudBtn.onclick = familySyncModal;
-
+  /* The header's cloud icon and its updateCloudIndicator() call were removed
+     here. Sync state reaches the person through the refresh bar on every tab
+     and cloudStatusLabel() in Settings; the header keeps only the avatar,
+     screensaver and settings icons. */
   const accountBtn = document.getElementById('accountBtn');
   if(accountBtn) accountBtn.onclick = familySyncModal;
 
@@ -9104,31 +9176,11 @@ function attachHandlers(){
   const bannerSignIn = document.getElementById('bannerSignIn');
   if(bannerSignIn) bannerSignIn.onclick = ()=>startSignIn(bannerSignIn);
 
-  /* Forces the round trip the 2.5-second poll makes anyway, so someone who
-     suspects sync is stuck can settle it either way in one press.
-
-     Pushes BEFORE pulling: an edit of your own still waiting to go up is the
-     likeliest reason the other device has not seen it, and pulling first would
-     report "up to date" while your change sat in the queue. */
-  const bannerRefresh = document.getElementById('bannerRefresh');
-  if(bannerRefresh) bannerRefresh.onclick = async ()=>{
-    bannerRefresh.disabled = true;
-    bannerRefresh.textContent = '🔄 Checking…';
-    try{
-      if(cloudSync.pendingPush) await cloudSync.push();
-      const result = await cloudSync.pull(false);
-      if(result === 'empty') await cloudSync.push();        // first device seeds the row
-      toast(result === 'applied' ? 'Picked up newer changes from another device.' : 'Already up to date.', 'success');
-    }catch(err){
-      /* A failed refresh is the whole signal the button was pressed for, so it
-         is surfaced rather than swallowed back into a silent idle state. */
-      toast((err && err.message) || 'Sync failed.', 'error');
-    }finally{
-      /* Redraws the strip with the new timestamp, which also rebuilds this
-         button in its enabled state -- no manual re-enable to forget. */
-      render();
-    }
-  };
+  /* The refresh bar's button. Present on every tab, because render() puts the
+     bar above whichever view is showing, so this wires up on every screen.
+     All the work lives in refreshEverything(). */
+  const appRefresh = document.getElementById('appRefresh');
+  if(appRefresh) appRefresh.onclick = ()=>refreshEverything(appRefresh);
   const timeFormatSel = document.getElementById('timeFormatSel');
   if(timeFormatSel) timeFormatSel.onchange = ()=>{
     state.timeFormat = timeFormatSel.value === '24h' ? '24h' : '12h';
