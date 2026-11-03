@@ -2174,9 +2174,10 @@ const cloudSync = {
     }
     this.status = status;
     this.detail = detail || '';
-    /* No header icon to repaint any more. The status still reaches the person
-       through cloudStatusLabel() on the sync panel and in Settings, and
-       through the Last sync stamp on the Home strip. */
+    /* The avatar carries the status now that the cloud icon is gone, and
+       status changes far more often than render() runs -- without this the
+       tooltip would still claim "connecting" long after it went live. */
+    updateAccountButton();
     renderCloudBlock();          // no-op unless the sync panel happens to be open
   },
 
@@ -3036,10 +3037,24 @@ function updateAccountButton(){
   const acct = cloudSync.account;
   const generic = tint=>`<span class="avatar sm" style="background:${tint}; color:#fff;">${PERSON_SILHOUETTE}</span>`;
 
+  /* This button took over BOTH of the removed cloud icon's jobs: it opens the
+     Family sync panel (wired in initCloudSync), and it reports sync status.
+
+     Every title below therefore leads with "Family sync" and ends with the
+     current status. The old titles named only the account -- and when signed
+     out it said "Sign in with Google", which was simply wrong about what
+     pressing it does. A control that misreports its own action is worse than
+     one with no tooltip at all.
+
+     Status comes from cloudStatusLabel(), the same words the sync panel and
+     Settings use, so there is one wording to keep in step rather than the
+     icon-and-opacity scheme the cloud button had. */
+  const status = ` · ${cloudStatusLabel()}`;
+
   if(acct.kind === 'member'){
     const p = acct.personId && state ? personById(acct.personId) : null;
     btn.innerHTML = p ? avatarHtml(p, 'sm') : generic('var(--board)');
-    btn.title = `Signed in as ${acct.email}${p ? ' (' + p.name + ')' : ' — tap to say who you are'}`;
+    btn.title = `Family sync — signed in as ${acct.email}${p ? ' (' + p.name + ')' : ', tap to say who you are'}${status}`;
     btn.classList.add('signed-in');
     return;
   }
@@ -3047,13 +3062,13 @@ function updateAccountButton(){
     /* Signed in with Google but not on the family list. That is a real state,
        and a different one from signed out, so it gets its own colour. */
     btn.innerHTML = generic('var(--mustard)');
-    btn.title = `Signed in as ${auth.email()} — not on a family list yet`;
+    btn.title = `Family sync — signed in as ${auth.email()}, not on a family list yet${status}`;
     btn.classList.add('signed-in');
     return;
   }
   btn.classList.remove('signed-in');
   btn.innerHTML = `<span class="avatar sm signed-out">${PERSON_SILHOUETTE}</span>`;
-  btn.title = 'Sign in with Google';
+  btn.title = `Family sync — not signed in${status}`;
 }
 
 /* Starts Google sign-in from any button. On success the page leaves for Google,
