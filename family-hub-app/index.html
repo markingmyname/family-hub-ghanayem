@@ -753,6 +753,30 @@ function fmtDate(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(
 function parseDate(s){ const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); }
 function uid(){ return Math.random().toString(36).slice(2,9); }
 
+/* A STABLE local id for an event imported from Google, derived from Google's
+   own id so that two devices importing the same event produce the same row.
+
+   Why this exists: the household shares one Google calendar, so every signed-in
+   device imports the same events. uid() gave each device a different local id
+   for the same event, the merge compared ids, saw no match, and kept both --
+   one duplicate per device per event. A derived id removes the race entirely.
+
+   Not a hash: Google's ids are already unique and stable, so sanitising is
+   enough. Lower-cased and stripped to [a-z0-9-] because the id also travels
+   through CSS selectors and data- attributes, and capped so a long id cannot
+   bloat every row. The 'g-' prefix keeps these from ever colliding with a
+   uid(), which is 7 unprefixed base-36 characters.
+
+   USED BY googleSync.pull(). Do not change the shape without a migration:
+   the id is what the merge matches on across devices. */
+function gcalEventId(googleId){
+  const clean = String(googleId || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+  /* An id Google gave us that sanitises to nothing would make every such event
+     collide on 'g-'. Fall back to a random id: a duplicate is recoverable,
+     silently merging two unrelated events into one is not. */
+  return clean ? 'g-' + clean : uid();
+}
+
 /* Events always STORE time as 24-hour "HH:MM" — that's what <input type="time">,
    iCal, Google and Graph all expect. This is display-only formatting. */
 function use24h(){ return state && state.timeFormat === '24h'; }
@@ -4163,12 +4187,27 @@ window.addEventListener('resize', ()=>{
     if(activeTab==='calendar' && state.calView==='month') render();
   }, 200);
 });
+/* How much of a title the month grid shows before cutting it. The month view is
+   an at-a-glance view: a long title pushes the cell taller, squeezes out the
+   events below it, and is unreadable at that size anyway. The full title is
+   always one tap away and is in the hover tooltip. */
+const MONTH_CHIP_TITLE_MAX = 25;
+
+/* Cuts at the limit and appends a real ellipsis character, so the chip is never
+   wider than the budget. Shortens on the RAW title, before escaping -- trimming
+   escaped HTML can slice an entity like &amp; in half and render as garbage. */
+function monthChipTitle(title){
+  const t = String(title || '');
+  return t.length > MONTH_CHIP_TITLE_MAX ? t.slice(0, MONTH_CHIP_TITLE_MAX) + '…' : t;
+}
+
 function monthChipHtml(e){
   const color = eventColor(e);
   const text = eventTextColor(e);
-  const label = escapeHtml(e.title);
+  const label = escapeHtml(monthChipTitle(e.title));
   /* The cells are too narrow for badges, so who/when/repeating all live in the
-     hover tooltip — the chip itself stays as readable as Google's. */
+     hover tooltip — the chip itself stays as readable as Google's. The tooltip
+     deliberately keeps the FULL title, so shortening never loses information. */
   const tip = escapeHtml(
     (e.time ? fmtEventTime(e, {withLabels:true})+' · ' : 'All day · ')+e.title+' · '+eventPeopleLabel(e)+(e.seriesId ? ' · '+seriesLabel(e) : '')
   );
@@ -4181,20 +4220,84 @@ function monthChipHtml(e){
     <span class="chip-time">${fmtEventStart(e)}</span>
     <span class="chip-title">${label}</span></div>`;
 }
+/* The week as an hour grid: times run down the left, one column per day across
+   the top -- the same shape as Google Calendar's week view, and the same shape
+   renderDayColumns() already uses, so the two views read alike and share the
+   dg-* styles rather than each inventing their own.
+
+   The previous version stamped the time onto every pill ("9:00 AM · Soccer")
+   and stacked them in a plain list. That repeated the time on every row and
+   still never told you how far apart two events were. Putting the hour on the
+   axis says it once and makes the gap visible.
+
+   One shared hour window across all seven days, computed from the events
+   actually in the week, so a 6am Tuesday and a 10pm Friday both have a row and
+   every day's 9am sits on the same line. Rows are one hour tall: positioning
+   by the minute needs collision handling for overlapping events, which is a
+   different and much larger job than this.
+
+   DEPENDS ON  visibleEvents(dateStr)  the calendar filter
+               eventColor/eventTextColor, fmtEventTime, use24h
+               .dg-* grid styles, shared with the day view */
 function renderWeekGrid(d){
   const start = startOfWeek(d);
-  let cols='';
-  for(let i=0;i<7;i++){
-    const cur = new Date(start); cur.setDate(start.getDate()+i);
+  const days = [];
+  for(let i = 0; i < 7; i++){
+    const cur = new Date(start); cur.setDate(start.getDate() + i);
     const ds = fmtDate(cur);
-    const dayEvents = visibleEvents(ds).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
-    const pills = dayEvents.map(e=>`<div class="ev-pill" style="background:${eventColor(e)}; color:${eventTextColor(e)};" data-editevent="${e.id}" title="${escapeHtml(eventPeopleLabel(e))}">${e.time?fmtEventTime(e)+' · ':''}${escapeHtml(e.title)}</div>`).join('');
-    cols += `<div class="week-col" data-daycell="${ds}">
-        <div class="week-col-head">${DOW[cur.getDay()]}<br><span class="mono" style="font-weight:400;">${cur.getDate()}</span></div>
-        ${pills}
-      </div>`;
+    days.push({ date: cur, ds, events: visibleEvents(ds) });
   }
-  return `<div class="week-grid">${cols}</div>`;
+
+  /* A waking day by default, stretched to cover anything outside it. Without
+     the stretch an early or late event would simply have no row to sit in. */
+  let startH = 7, endH = 21;
+  days.forEach(day=>day.events.forEach(e=>{
+    if(!e.time) return;                       // all-day events get their own row
+    const h = parseInt(e.time.slice(0, 2), 10);
+    if(!isNaN(h)){ startH = Math.min(startH, h); endH = Math.max(endH, h); }
+  }));
+
+  const hourLabel = h => use24h()
+    ? String(h).padStart(2, '0') + ':00'
+    : `${h % 12 === 0 ? 12 : h % 12} ${h < 12 ? 'AM' : 'PM'}`;
+
+  /* No time on the pill any more -- the row it sits in is the time. The exact
+     start and end stay in the tooltip for anything finer than the hour. */
+  const pill = e => `<div class="dg-pill" style="background:${eventColor(e)}; color:${eventTextColor(e)};"
+      data-editevent="${e.id}"
+      title="${escapeHtml((e.time ? fmtEventTime(e, {withLabels:true}) + ' · ' : 'All day · ') + e.title + ' · ' + eventPeopleLabel(e))}">${escapeHtml(e.title)}</div>`;
+
+  const today = todayStr();
+  const nowH = new Date().getHours();
+
+  let cells = `<div class="dg-corner dg-head"></div>` + days.map(day=>`
+    <div class="dg-head${day.ds === today ? ' is-now' : ''}" data-daycell="${day.ds}">
+      ${DOW[day.date.getDay()]}<br><span class="mono" style="font-weight:400;">${day.date.getDate()}</span>
+    </div>`).join('');
+
+  /* All-day events can't belong to an hour, so they get one row above the
+     grid rather than being dropped or forced into the first hour. */
+  const anyAllDay = days.some(day=>day.events.some(e=>!e.time));
+  if(anyAllDay){
+    cells += `<div class="dg-hour dg-allday-label">All day</div>` + days.map(day=>`
+      <div class="dg-cell dg-allday" data-daycell="${day.ds}">${day.events.filter(e=>!e.time).map(pill).join('')}</div>`).join('');
+  }
+
+  for(let h = startH; h <= endH; h++){
+    cells += `<div class="dg-hour">${hourLabel(h)}</div>` + days.map(day=>{
+      /* Highlighting the current hour only on today's column: the same hour on
+         Friday is not "now", and shading the whole row would say it is. */
+      const isNow = day.ds === today && h === nowH;
+      const inHour = day.events
+        .filter(e=>e.time && parseInt(e.time.slice(0, 2), 10) === h)
+        .sort((a, b)=>(a.time || '').localeCompare(b.time || ''));
+      return `<div class="dg-cell${isNow ? ' is-now' : ''}" data-daycell="${day.ds}">${inHour.map(pill).join('')}</div>`;
+    }).join('');
+  }
+
+  return `<div class="day-grid-wrap">
+      <div class="day-grid" style="grid-template-columns:70px repeat(7, minmax(110px, 1fr));">${cells}</div>
+    </div>`;
 }
 
 /* The day view is one grid: hours down the side, one column per calendar across
@@ -4457,26 +4560,28 @@ function eventModal(existing, presetDate){
     const errs = [];
     if(wholeSeries){
       const members = seriesMembers(ev.seriesId);
-      for(const s of services){
-        try{
-          /* Deleting the provider's master removes every instance in one call —
-             only fall back to per-instance deletes when there's no master id. */
-          if(ev[s.seriesField]) await s.api.removeSeries(ev[s.seriesField]);
-          else for(const m of members){ if(m[s.idField]) await s.api.remove(m); }
-        }catch(e){ errs.push(s.label); }
-      }
+      /* DELIBERATELY DOES NOT DELETE THE SERIES FROM THE CONNECTED CALENDAR.
+         This was the most dangerous call in the app: one tap removed an entire
+         recurring series from the shared household calendar, for every person
+         it is shared with, with no undo. Family Hub drops its own copies and
+         leaves the provider alone. */
+      const linkedSeries = services.filter(s=>ev[s.seriesField] || members.some(m=>m[s.idField])).map(s=>s.label);
       state.events = state.events.filter(e=>e.seriesId!==ev.seriesId);
       await saveState(); closeModal(); render();
-      if(errs.length) toast('Series removed here, but couldn\'t delete from '+errs.join(' & ')+'.', 'error');
+      if(linkedSeries.length) toast(`Series removed from Family Hub (${members.length} events). It's still in ${linkedSeries.join(' & ')} and will come back on the next sync — delete it there to remove it for good.`, 'success');
       else toast(`Series deleted (${members.length} events).`, 'success');
       return;
     }
-    for(const s of services){
-      if(ev[s.idField]){ try{ await s.api.remove(ev); }catch(e){ errs.push(s.label); } }
-    }
+    /* DELIBERATELY DOES NOT DELETE FROM THE CONNECTED CALENDAR.
+       The household shares ONE Google calendar, so a delete here would remove
+       the event from everybody's calendar, not just this board. Worse, two
+       duplicate rows carry the SAME googleId, so deleting either copy would
+       destroy the one real event behind both. Family Hub removes it from its
+       own board only. See the matching note on the series branch above. */
+    const linked = services.filter(s=>ev[s.idField]).map(s=>s.label);
     state.events = state.events.filter(e=>e.id!==ev.id);
     await saveState(); closeModal(); render();
-    if(errs.length) toast('Removed here, but couldn\'t delete from '+errs.join(' & ')+'.', 'error');
+    if(linked.length) toast(`Removed from Family Hub. It's still in ${linked.join(' & ')} and will come back on the next sync — delete it there to remove it for good.`, 'success');
     else toast('Event deleted.', 'success');
   };
 
@@ -4553,7 +4658,16 @@ function eventModal(existing, presetDate){
       try{
         if(want && !hasId){ data[s.idField] = await s.api.push(data); if(!data.source) data.source = s.key; }
         else if(want && hasId){ await s.api.update(data); }
-        else if(!want && hasId){ await s.api.remove(data); data[s.idField] = undefined; }
+        else if(!want && hasId){
+          /* Unticking means "stop syncing this one", NOT "delete it from the
+             shared calendar" -- it used to mean the second, which made an
+             unticked checkbox a destructive act on a calendar the whole
+             household shares. Forget the link and leave the provider's copy
+             alone. The next pull will re-import it as a fresh event, which is
+             the honest outcome: the event does still exist over there. */
+          data[s.idField] = undefined;
+          data[s.seriesField] = undefined;
+        }
       }catch(e){ errs.push(s.label); }
     }
     if(isEdit){ const idx = state.events.findIndex(e=>e.id===ev.id); state.events[idx]=data; }
@@ -6696,9 +6810,22 @@ const googleSync = {
       }
       else {
         const sibling = masterId ? state.events.find(x=>x.seriesGoogleId===masterId) : null;
+        /* The id is DERIVED FROM GOOGLE'S id, not generated at random.
+           This household shares one Google calendar, so the same event is
+           imported independently on every device. With uid() each device
+           minted a different local id for the same event, the merge had no way
+           to tell they were the same thing, and the family got one duplicate
+           per device per event. Deriving the id means two devices importing
+           the same event produce byte-identical rows and the merge folds them
+           into one. Same fix as the cleaning plan in ff9dceb.
+
+           Events already imported under a random id are unaffected: the lookup
+           above matches on googleId, not id, so they are still found and
+           updated rather than re-created. No migration, no second wave of
+           duplicates from this change. */
         state.events.push({
-          id:uid(), personIds: personId ? [personId] : [], title, date:parsed.date, time:parsed.time, endTime:parsed.endTime, source:'google', googleId:ev.id,
-          seriesId: masterId ? (sibling ? sibling.seriesId : uid()) : undefined,
+          id: gcalEventId(ev.id), personIds: personId ? [personId] : [], title, date:parsed.date, time:parsed.time, endTime:parsed.endTime, source:'google', googleId:ev.id,
+          seriesId: masterId ? (sibling ? sibling.seriesId : gcalEventId(masterId)) : undefined,
           seriesGoogleId: masterId || undefined,
           seriesRule: sibling ? sibling.seriesRule : undefined
         });
