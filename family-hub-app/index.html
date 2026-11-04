@@ -241,7 +241,21 @@
     border-radius:7px; padding:4px 7px; font-size:12px; font-weight:600;
     cursor:pointer; min-width:0; overflow-wrap:anywhere; line-height:1.3;
   }
-  .dg-pill .dg-time{font-family:'JetBrains Mono'; font-size:9.5px; opacity:0.85; display:block;}
+  /* One line per title, cut with an ellipsis at whatever width the column has.
+     Shared by the day and week views.
+
+     contain:inline-size is the part that matters. .day-grid has
+     min-width:max-content, so without it the grid sized itself to the longest
+     title on one line, every column shares the same 1fr, and a single long
+     title made all seven columns that wide -- which is what forced sideways
+     scrolling to see the week. Containment takes the title out of that
+     measurement, so columns are sized by the screen and the title is
+     ellipsized to fit them.
+
+     If a browser ignored containment the worst case is today's layout with
+     single-line titles: no wider than before, and shorter. The full title is
+     in the tooltip and one tap away in the event editor. */
+  .dg-pill .dg-title{display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; contain:inline-size;}
   @media(max-width:640px){
     .dg-head{font-size:12px; padding:7px 8px;}
     .dg-pill{font-size:11px;}
@@ -4265,7 +4279,7 @@ function renderWeekGrid(d){
      start and end stay in the tooltip for anything finer than the hour. */
   const pill = e => `<div class="dg-pill" style="background:${eventColor(e)}; color:${eventTextColor(e)};"
       data-editevent="${e.id}"
-      title="${escapeHtml((e.time ? fmtEventTime(e, {withLabels:true}) + ' · ' : 'All day · ') + e.title + ' · ' + eventPeopleLabel(e))}">${escapeHtml(e.title)}</div>`;
+      title="${escapeHtml((e.time ? fmtEventTime(e, {withLabels:true}) + ' · ' : 'All day · ') + e.title + ' · ' + eventPeopleLabel(e))}"><span class="dg-title">${escapeHtml(e.title)}</span></div>`;
 
   const today = todayStr();
   const nowH = new Date().getHours();
@@ -4331,9 +4345,13 @@ function renderDayColumns(d){
     ...people.map(p=>({ key:p.id, label:p.name, avatar:p, match:e=>eventPersonIds(e).includes(p.id) }))
   ];
 
-  const pill = (e, withTime)=>`<div class="dg-pill" data-editevent="${e.id}"
-      style="background:${eventColor(e)}; color:${eventTextColor(e)};" title="${escapeHtml(eventPeopleLabel(e))}">
-      ${withTime && e.time ? `<span class="dg-time">${fmtEventTime(e)}</span>` : ''}
+  /* No time inside the pill: the hour down the left side IS the time, same as
+     the week view. Printing it again on its own line made every pill two lines
+     tall for no new information. The exact start and end stay in the tooltip,
+     and in the editor one tap away. */
+  const pill = e=>`<div class="dg-pill" data-editevent="${e.id}"
+      style="background:${eventColor(e)}; color:${eventTextColor(e)};"
+      title="${escapeHtml((e.time ? fmtEventTime(e, {withLabels:true}) + ' · ' : 'All day · ') + e.title + ' · ' + eventPeopleLabel(e))}">
       <span class="dg-title">${escapeHtml(e.title)}</span>
     </div>`;
 
@@ -4344,14 +4362,14 @@ function renderDayColumns(d){
   const allDay = visible.filter(e=>!e.time);
   if(allDay.length){
     cells += `<div class="dg-hour dg-allday-label">All day</div>` + columns.map(c=>`
-      <div class="dg-cell dg-allday">${allDay.filter(c.match).map(e=>pill(e,false)).join('')}</div>`).join('');
+      <div class="dg-cell dg-allday">${allDay.filter(c.match).map(pill).join('')}</div>`).join('');
   }
 
   for(let h = startH; h <= endH; h++){
     const nowCls = isToday && h===nowH ? 'is-now' : '';
     const inHour = visible.filter(e=>e.time && parseInt(e.time.slice(0,2),10) === h);
     cells += `<div class="dg-hour ${nowCls}">${hourLabel(h)}</div>` + columns.map(c=>`
-      <div class="dg-cell ${nowCls}">${inHour.filter(c.match).map(e=>pill(e,true)).join('')}</div>`).join('');
+      <div class="dg-cell ${nowCls}">${inHour.filter(c.match).map(pill).join('')}</div>`).join('');
   }
 
   const template = `70px repeat(${columns.length}, minmax(150px, 1fr))`;
