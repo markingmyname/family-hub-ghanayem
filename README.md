@@ -71,6 +71,11 @@ Don't pick "GitHub Actions" as the source. Pull request previews are published a
 
 **Budget** and **Meals** — per-person balances, and a weekly meal plan with recipes, pantry, and grocery list.
 
+**Recipes** — three ways to add one: type it, add it from a photo (take one with the camera or pick one from your library), or paste a recipe page's address. Every recipe has a name, ingredients with an amount for each, instructions, and an optional *recipe memory* — why you have it. "From this week's meals" on the Groceries tab adds each ingredient with its amount as the quantity.
+
+- **Photos are kept on the recipe card.** Each one is shrunk to about 100 KB, but the whole board shares a few megabytes, so photo recipes run out of room at around 30–40. The app refuses a photo that won't fit rather than failing to save.
+- **Website import needs a one-time setup.** A browser can't download another site's page itself, so a small Supabase function, [`recipe-import`](supabase/functions/recipe-import/index.ts), does it and reads the recipe data most recipe sites publish. Deploy it once from the repo root with `npx supabase functions deploy recipe-import` (sign in first with `npx supabase login` if asked). It has no API keys or secrets. Sites that block automated downloads, or don't publish recipe data, get a message suggesting a photo or a screenshot instead.
+
 Finished chores, to-dos, and habits move into a collapsible **Completed** drawer at the foot of each page.
 
 ### Settings worth knowing
