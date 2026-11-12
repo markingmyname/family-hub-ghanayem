@@ -28,6 +28,7 @@ Either way you get a home-screen icon that opens with no address bar and no brow
 | [family-hub-app](family-hub-app) | The app itself — `index.html`, `manifest.json`, `sw.js`, icons. This is what gets published. |
 | [.github/workflows/pages.yml](.github/workflows/pages.yml) | Publishes `family-hub-app/` to the `gh-pages` branch, which GitHub Pages serves, on every push to `main`. |
 | [.github/workflows/preview.yml](.github/workflows/preview.yml) | Publishes a preview of each pull request that changes the app, and removes it when the pull request closes. |
+| [.github/scripts/preview_links.py](.github/scripts/preview_links.py) | Puts each preview's link in the pull request's description, a comment, and a GitHub deployment. |
 
 ## Publishing changes
 
@@ -37,7 +38,13 @@ To republish without changing anything: **Actions** tab → **Deploy Family Hub 
 
 ### Previewing a pull request before you merge
 
-Open a pull request that changes anything in `family-hub-app/`. Within a couple of minutes a **Preview** link appears at the top of the pull request's description, and a comment appears with the same link and a QR code — scan the code to open the preview on a phone. Every new push to the pull request updates the preview, and closing or merging the pull request removes it, along with the description link.
+Open a pull request that changes anything in `family-hub-app/`. Within a couple of minutes the preview link shows up in three places:
+
+- a **Preview** link at the top of the pull request's description
+- a comment with the same **Preview** link and a QR code — scan the code to open the preview on a phone
+- a **View deployment** button on the pull request, and an entry under the repository's **Deployments** page (environment `pr-preview`)
+
+Every new push to the pull request updates the preview. Closing or merging the pull request removes it: the description link comes out, the comment says the preview was removed, and the deployment is marked inactive.
 
 Preview links look like `https://markingmyname.github.io/family-hub-ghanayem/pr-preview/pr-12/`.
 
