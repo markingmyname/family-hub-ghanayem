@@ -37,7 +37,7 @@ To republish without changing anything: **Actions** tab → **Deploy Family Hub 
 
 ### Previewing a pull request before you merge
 
-Open a pull request that changes anything in `family-hub-app/`. Within a couple of minutes a comment appears on it with a preview link and a QR code — scan the code to open the preview on a phone. Every new push to the pull request updates the preview, and closing or merging the pull request removes it.
+Open a pull request that changes anything in `family-hub-app/`. Within a couple of minutes a **Preview** link appears at the top of the pull request's description, and a comment appears with the same link and a QR code — scan the code to open the preview on a phone. Every new push to the pull request updates the preview, and closing or merging the pull request removes it, along with the description link.
 
 Preview links look like `https://markingmyname.github.io/family-hub-ghanayem/pr-preview/pr-12/`.
 
