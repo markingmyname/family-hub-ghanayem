@@ -6401,7 +6401,9 @@ function safeHttpUrl(raw){
    because this runs while saved data loads, possibly before later script lines. */
 function splitIngredientLine(line){
   const text = String(line || '').replace(/\s+/g, ' ').trim();
-  const num = '(?:\\d+(?:[.,]\\d+)?(?:\\s+\\d+\\/\\d+)?|\\d+\\/\\d+|[½⅓⅔¼¾⅕⅛⅜⅝⅞])(?:\\s*[½⅓⅔¼¾⅕⅛⅜⅝⅞])?';
+  // Longest forms first: the regex takes the first alternative that fits, so a
+  // plain "1" listed first would leave "/2" of "1/2 tsp salt" on the ingredient.
+  const num = '(?:\\d+\\s+\\d+\\/\\d+|\\d+\\/\\d+|\\d+(?:[.,]\\d+)?|[½⅓⅔¼¾⅕⅛⅜⅝⅞])(?:\\s*[½⅓⅔¼¾⅕⅛⅜⅝⅞])?';
   const unit = 'cups?|c\\.|tablespoons?|tbsps?\\.?|tbs\\.?|tbl\\.?|teaspoons?|tsps?\\.?|fl\\.?\\s?oz\\.?|ounces?|oz\\.?' +
     '|pounds?|lbs?\\.?|grams?|g|kilograms?|kg|milliliters?|millilitres?|ml|liters?|litres?|quarts?|qts?\\.?' +
     '|pints?|pts?\\.?|gallons?|pinch(?:es)?|dash(?:es)?|cloves?|cans?|jars?|packages?|pkgs?\\.?|packets?' +
