@@ -3,7 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://accounts.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://graph.microsoft.com https://login.microsoftonline.com https://login.live.com https://cdn.jsdelivr.net https://accounts.google.com https://www.googleapis.com https://oauth2.googleapis.com https://*.supabase.co https://api.open-meteo.com https://geocoding-api.open-meteo.com; frame-src https://login.microsoftonline.com https://login.live.com https://accounts.google.com; base-uri 'self'; form-action 'self'">
+<!-- CSP notes: 'wasm-unsafe-eval' lets the recipe text reader (Tesseract OCR,
+     loaded on demand from cdn.jsdelivr.net) compile its WebAssembly engine; it
+     does not allow eval() of JavaScript. worker-src lets that reader run in a
+     background worker it starts from a blob: URL, and keeps 'self' for sw.js. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net https://accounts.google.com; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://graph.microsoft.com https://login.microsoftonline.com https://login.live.com https://cdn.jsdelivr.net https://accounts.google.com https://www.googleapis.com https://oauth2.googleapis.com https://*.supabase.co https://api.open-meteo.com https://geocoding-api.open-meteo.com; frame-src https://login.microsoftonline.com https://login.live.com https://accounts.google.com; base-uri 'self'; form-action 'self'">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <title>Family Hub</title>
 <meta name="theme-color" content="#2E3A46">
@@ -524,9 +528,30 @@
   .meal-cell{background:#fff; border:1px solid var(--line); border-radius:8px; padding:6px; min-height:44px; font-size:12px; cursor:pointer;}
   .meal-cell:empty::before{content:'+'; color:#ccc;}
   .mp-week{font-size:12px; font-weight:700; color:var(--ink-soft); margin-bottom:8px;}
-  .recipe-card{border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:8px; background:#fff;}
-  .recipe-card h4{margin:0 0 6px 0; font-size:15px;}
-  .recipe-card .ing{font-size:12px; color:var(--ink-soft); margin-bottom:6px;}
+  /* Recipe cards: collapsed to name + photo; tap to open the full recipe. */
+  .recipe-card{border:1px solid var(--line); border-radius:10px; margin-bottom:8px; background:#fff;}
+  .recipe-card > summary{display:flex; align-items:center; gap:10px; padding:10px 12px; cursor:pointer; list-style:none;}
+  .recipe-card > summary::-webkit-details-marker{display:none;}
+  .recipe-card .rc-name{font-weight:700; font-size:15px; flex:1;}
+  .recipe-card .rc-count{font-size:11px; color:var(--ink-soft);}
+  .recipe-card .rc-thumb{width:40px; height:40px; object-fit:cover; border-radius:6px;}
+  .recipe-card .rc-body{padding:0 12px 12px;}
+  .recipe-card .rc-photo{display:block; max-width:100%; max-height:420px; border-radius:8px; margin-bottom:8px;}
+  .rc-label{font-size:11px; font-weight:700; text-transform:uppercase; color:var(--ink-soft); margin:10px 0 4px;}
+  .rc-ings, .rc-steps{margin:0; padding-left:20px; font-size:13px;}
+  .rc-ings li, .rc-steps li{margin-bottom:3px;}
+  .rc-amt{font-weight:700;}
+  .rc-memory{margin:0; font-size:13px; font-style:italic;}
+  .rc-none{margin:0; font-size:12px; color:var(--ink-soft);}
+  .recipe-card .recipe-src{display:inline-block; margin-top:8px; font-size:12px; color:var(--ink-soft);}
+  .recipe-add{margin:0 0 12px;}
+  /* Recipe form: one row per ingredient, amount box then ingredient box. */
+  .rc-row{display:flex; gap:6px; align-items:center; margin-bottom:6px;}
+  .rc-row .rc-amt-in{flex:0 0 32%; min-width:0;}
+  .rc-row .rc-item-in{flex:1; min-width:0;}
+  .rc-opt{font-weight:400; color:var(--ink-soft);}
+  .rc-photo-preview{display:block; max-width:100%; max-height:220px; border-radius:8px; margin-bottom:6px;}
+  .ai-note{font-size:12px; color:var(--ink-soft); margin:0 0 10px;}
   .list-row{display:flex; align-items:center; gap:10px; padding:9px 10px; border:1px solid var(--line); border-radius:9px; margin-bottom:6px; background:#fff;}
   .list-row input[type=checkbox]{width:18px; height:18px; flex-shrink:0;}
   .list-row .txt{flex:1; font-size:14px;}
@@ -1352,6 +1377,14 @@ function migrateState(s){
     if(typeof g.order !== 'number') g.order = i;
     if(g.done === undefined) g.done = false;
   });
+  /* Recipes grew a format: ingredient rows (amount + ingredient), instructions,
+     an optional "recipe memory", an optional photo, and the page an imported
+     recipe came from. Older recipes kept every ingredient in one comma- or
+     line-separated string; normalizeRecipe() splits those into rows. */
+  if(!Array.isArray(s.meals.recipes)) s.meals.recipes = [];
+  s.meals.recipes = s.meals.recipes
+    .filter(r=>r && typeof r.name === 'string' && r.name.trim())
+    .map(normalizeRecipe);
   /* Events moved from a single personId to a personIds list. An empty list means
      the event belongs to the whole family (the catch-all calendar). */
   (s.events||[]).forEach(e=>{
@@ -6093,14 +6126,49 @@ function renderMealPlan(){
   const head = `<div></div>` + days.map(d=>`<div class="mp-head">${DOW[d.getDay()]} ${d.getDate()}</div>`).join('');
   return `${weekLabel}<div class="meal-plan-grid">${head}${rows}</div>`;
 }
+/* Each recipe is a collapsed card (photo thumbnail + name); opening it shows
+   the recipe in the family's format: ingredients (amount + ingredient),
+   instructions, and the recipe memory when there is one. Every value is
+   escaped; the photo is only ever a data:image URL (normalizeRecipe checks it)
+   and the source link is re-checked by safeHttpUrl() here. */
 function renderRecipes(){
-  const cards = state.meals.recipes.map(r=>`
-    <div class="recipe-card">
-      <h4>${escapeHtml(r.name)} <span style="float:right;cursor:pointer;font-size:13px;color:var(--ink-soft);" data-delrecipe="${r.id}">remove</span></h4>
-      <div class="ing"><strong>Ingredients:</strong> ${escapeHtml(r.ingredients)}</div>
-      <div style="font-size:13px;">${escapeHtml(r.instructions)}</div>
-    </div>`).join('') || `<div class="empty">No recipes saved yet 📖</div>`;
-  return `${cards}<button class="btn btn-mustard" id="addRecipeBtn">+ Add recipe</button>`;
+  const cards = state.meals.recipes.map(r=>{
+    const src = safeHttpUrl(r.source);
+    const rows = r.ingredients || [];
+    const steps = recipeSteps(r.instructions);
+    return `
+    <details class="recipe-card">
+      <summary>
+        ${r.photo ? `<img class="rc-thumb" src="${escapeHtml(r.photo)}" alt="">` : ''}
+        <span class="rc-name">${escapeHtml(r.name)}</span>
+        <span class="rc-count">${rows.length} ingredient${rows.length===1?'':'s'}</span>
+      </summary>
+      <div class="rc-body">
+        ${r.photo ? `<img class="rc-photo" src="${escapeHtml(r.photo)}" alt="Photo of the ${escapeHtml(r.name)} recipe">` : ''}
+        <div class="rc-label">Ingredients</div>
+        ${rows.length
+          ? `<ul class="rc-ings">${rows.map(x=>`<li>${x.amount ? `<span class="rc-amt">${escapeHtml(x.amount)}</span> ` : ''}${escapeHtml(x.item)}</li>`).join('')}</ul>`
+          : `<p class="rc-none">No ingredients added yet.</p>`}
+        <div class="rc-label">Instructions</div>
+        ${steps.length
+          ? `<ol class="rc-steps">${steps.map(s=>`<li>${escapeHtml(s)}</li>`).join('')}</ol>`
+          : `<p class="rc-none">No instructions added yet.</p>`}
+        ${r.memory ? `<div class="rc-label">Recipe memory</div><p class="rc-memory">${escapeHtml(r.memory)}</p>` : ''}
+        ${src ? `<a class="recipe-src" href="${escapeHtml(src.href)}" target="_blank" rel="noopener noreferrer">From ${escapeHtml(src.hostname.replace(/^www\./,''))} ↗</a>` : ''}
+        <div class="meal-tools">
+          <button class="btn btn-ghost" data-editrecipe="${escapeHtml(r.id)}">Edit</button>
+          <button class="btn btn-ghost" data-delrecipe="${escapeHtml(r.id)}">Remove</button>
+        </div>
+      </div>
+    </details>`;
+  }).join('') || `<div class="empty">No recipes saved yet 📖</div>`;
+  return `
+    <div class="meal-tools recipe-add">
+      <button class="btn btn-mustard" data-recipeadd="manual">✍️ Type a recipe</button>
+      <button class="btn btn-ghost" data-recipeadd="photo">📷 From a photo</button>
+      <button class="btn btn-ghost" data-recipeadd="web">🔗 From a website</button>
+    </div>
+    ${cards}`;
 }
 function renderPantry(){
   const rows = state.meals.pantry.map(item=>`
@@ -6295,10 +6363,12 @@ function groceryFromMealPlan(){
   let added = 0;
   state.meals.recipes.forEach(r=>{
     if(!wanted.has((r.name||'').trim().toLowerCase())) return;
-    (r.ingredients||'').split(/[,\n]/).map(s=>s.trim()).filter(Boolean).forEach(ing=>{
-      if(existing.has(ing.toLowerCase())) return;
-      existing.add(ing.toLowerCase());
-      addGroceryItem(ing);
+    // Each ingredient row becomes one grocery item, with its amount as the quantity.
+    (r.ingredients||[]).forEach(row=>{
+      const key = row.item.toLowerCase();
+      if(existing.has(key)) return;
+      existing.add(key);
+      addGroceryItem(row.item, row.amount);
       added++;
     });
   });
@@ -6307,24 +6377,451 @@ function groceryFromMealPlan(){
   toast(`${added} ingredient${added===1?'':'s'} added 🛒`, 'success');
 }
 
-function recipeModal(){
+/* ============================= RECIPES =============================
+   Three ways in, one format out:
+     Type a recipe    -> the recipe form, blank.
+     From a photo     -> the same form, starting with "Take a photo" or
+                         "Choose from library". The photo is kept on the card
+                         and the family types the rest; nothing reads the photo.
+     From a website   -> paste a recipe page's address. The recipe-import
+                         Supabase Edge Function (supabase/functions/recipe-import)
+                         copies the recipe the page publishes, and the form
+                         opens filled in, to check before saving.
+   Every recipe has this shape, and normalizeRecipe() enforces it each time the
+   board loads, so a recipe can't exist in any other form:
+     { id, name, ingredients: [{ amount, item }], instructions,
+       memory?, photo?, source? }
+
+   Depends on: uid(), escapeHtml(), openModal()/closeModal(), toast(),
+   downscaleToDataUrl() (photos), saveState()/render(), and for website import
+   cloudProject(), cloudConfig(), cloudSync.account, auth.accessToken(), and
+   dailyLog.event() (failure log). */
+
+const RECIPE_IMPORT_FN = 'recipe-import';
+const RECIPE_PHOTO_DIM = 1000;        // longest side in px: recipe-card text stays readable
+const RECIPE_PHOTO_QUALITY = 0.6;     // JPEG quality; roughly 60-120 KB per photo
+const RECIPE_BOARD_LIMIT = 4_000_000; // characters; saveState() already warns at 4.5M
+let recipeImportBusy = false;         // one import at a time
+
+/* ---- Reading a recipe photo (OCR) ----
+   Tesseract.js runs on the device: the photo never leaves it, and there's no
+   key and no cost. It's good with printed text (cookbooks, screenshots) and
+   weak with handwriting, so the form always shows the result for checking.
+   External dependency: cdn.jsdelivr.net, downloaded only the first time someone
+   taps "Read the text" (~7 MB: the library, its worker, its WebAssembly engine,
+   and the English data); browsers keep it after that. If the CDN can't be
+   reached, reading fails with a message and nothing else is affected.
+   The library file is pinned by version AND by SHA-384 hash, so a changed file
+   on the CDN is refused instead of run. The worker and engine are pinned by
+   version through the library; the English data is pinned here. */
+const OCR_LIB_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/tesseract.min.js';
+const OCR_LIB_SRI = 'sha384-2BQ3U3OdKOb0Uczxqr41I9UvZkzr4V9Hv8uSzMMZAlmhsFClvdZX5wi5fDCzG+tM';
+const OCR_LANG_PATH = 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng@1.0.0/4.0.0_best_int';
+const OCR_MAX_DIM = 2000;             // OCR reads small print better from a larger image than the saved one
+let ocrLibPromise = null;
+let ocrBusy = false;                  // one reading at a time: each holds ~100 MB while it runs
+
+/** Loads the OCR library once, on first use. A failed load can be retried. */
+function loadOcrLib(){
+  if(window.Tesseract) return Promise.resolve(window.Tesseract);
+  if(!ocrLibPromise){
+    ocrLibPromise = new Promise((resolve, reject)=>{
+      const s = document.createElement('script');
+      s.src = OCR_LIB_URL;
+      s.integrity = OCR_LIB_SRI;
+      s.crossOrigin = 'anonymous';
+      s.onload = ()=> window.Tesseract ? resolve(window.Tesseract) : reject(new Error('The text reader didn\'t start.'));
+      s.onerror = ()=>{ ocrLibPromise = null; s.remove(); reject(new Error('The text reader couldn\'t download. Check your connection and try again.')); };
+      document.head.appendChild(s);
+    });
+  }
+  return ocrLibPromise;
+}
+
+/* Reads the text in one image. onProgress(label, fraction) reports each stage.
+   The worker is always shut down afterwards, which frees its memory. */
+async function ocrImage(source, onProgress){
+  const T = await loadOcrLib();
+  const labels = {
+    'loading tesseract core': 'Getting the text reader ready',
+    'loading language traineddata': 'Getting the text reader ready',
+    'recognizing text': 'Reading the photo'
+  };
+  let worker = null;
+  try{
+    worker = await T.createWorker('eng', 1, {   // 1 = the LSTM (neural) engine only
+      langPath: OCR_LANG_PATH,
+      logger: m=>{ if(m && typeof m.progress === 'number' && labels[m.status]) onProgress(labels[m.status], m.progress); }
+    });
+    const { data } = await worker.recognize(source);
+    return (data && data.text) || '';
+  }catch(err){
+    // The worker reports failures as plain strings or objects; give the family one sentence.
+    throw new Error(err instanceof Error && /download|connection/i.test(err.message) ? err.message : 'The text reader couldn\'t read that photo. Try a clearer, closer one.');
+  }finally{
+    if(worker){ try{ await worker.terminate(); }catch(_){ /* already stopped */ } }
+  }
+}
+
+/* Sorts OCR text into the recipe format. With "Ingredients" / "Directions"
+   (or "Instructions", "Method", "Steps", "Preparation") headings, lines go
+   where the headings say. Without them, lines that start with an amount are
+   ingredients and the rest are steps. The first plain line before any heading
+   is taken as the name. Lines the camera wrapped mid-sentence are joined back
+   into one step. A best guess that the family checks in the form. */
+function parseRecipeText(text){
+  const lines = String(text || '').split(/\r?\n/)
+    .map(l=>l.replace(/^[\s•·▪●○◦*>-]+/, '').replace(/\s+/g, ' ').trim())
+    .filter(l=>l.length > 1);
+  const ingHead = /^ingredients?\b[:\s]*$/i;
+  const stepHead = /^(instructions?|directions?|method|steps|preparation)\b[:\s]*$/i;
+  const looksLikeIngredient = l=>l.length <= 90 && splitIngredientLine(l).amount !== '';
+  let name = '', section = 'auto';
+  const ingredients = [], steps = [];
+  for(const line of lines){
+    if(ingHead.test(line)){ section = 'ing'; continue; }
+    if(stepHead.test(line)){ section = 'steps'; continue; }
+    if(!name && section === 'auto' && !looksLikeIngredient(line)){ name = line.slice(0, 120); continue; }
+    const target = section === 'ing' ? 'ing'
+                 : section === 'steps' ? 'steps'
+                 : (looksLikeIngredient(line) ? 'ing' : 'steps');
+    if(target === 'ing'){ ingredients.push(line); continue; }
+    // A line that starts lowercase after a step that didn't end a sentence is
+    // the same step, wrapped onto a new line by the page.
+    const prev = steps[steps.length - 1];
+    if(prev && !/[.!?:]$/.test(prev) && /^[a-z(]/.test(line)) steps[steps.length - 1] = prev + ' ' + line;
+    else steps.push(line);
+  }
+  return { name, ingredients: ingredients.map(splitIngredientLine), instructions: steps.join('\n') };
+}
+
+/** An http(s) URL object, or null for anything else (javascript:, data:, junk). */
+function safeHttpUrl(raw){
+  if(typeof raw !== 'string' || !raw) return null;
+  try{
+    const u = new URL(raw);
+    return (u.protocol === 'https:' || u.protocol === 'http:') ? u : null;
+  }catch(e){ return null; }
+}
+
+/* Splits one ingredient line into { amount, item }:
+     "1 (15 oz) can black beans" -> "1 (15 oz) can" + "black beans"
+     "1 1/2 cups milk"           -> "1 1/2 cups"    + "milk"
+     "Salt and pepper to taste"  -> ""              + "Salt and pepper to taste"
+   The amount is the leading number (1, 1.5, 1 1/2, ½, 2-3), an optional "(…)"
+   note, and an optional unit word. It's a best guess; the form shows both
+   boxes so the family can fix it. The pattern is built inside the function
+   because this runs while saved data loads, possibly before later script lines. */
+function splitIngredientLine(line){
+  const text = String(line || '').replace(/\s+/g, ' ').trim();
+  // Longest forms first: the regex takes the first alternative that fits, so a
+  // plain "1" listed first would leave "/2" of "1/2 tsp salt" on the ingredient.
+  const num = '(?:\\d+\\s+\\d+\\/\\d+|\\d+\\/\\d+|\\d+(?:[.,]\\d+)?|[½⅓⅔¼¾⅕⅛⅜⅝⅞])(?:\\s*[½⅓⅔¼¾⅕⅛⅜⅝⅞])?';
+  const unit = 'cups?|c\\.|tablespoons?|tbsps?\\.?|tbs\\.?|tbl\\.?|teaspoons?|tsps?\\.?|fl\\.?\\s?oz\\.?|ounces?|oz\\.?' +
+    '|pounds?|lbs?\\.?|grams?|g|kilograms?|kg|milliliters?|millilitres?|ml|liters?|litres?|quarts?|qts?\\.?' +
+    '|pints?|pts?\\.?|gallons?|pinch(?:es)?|dash(?:es)?|cloves?|cans?|jars?|packages?|pkgs?\\.?|packets?' +
+    '|sticks?|slices?|bunch(?:es)?|heads?|sprigs?|handfuls?|bottles?|bags?|boxes?|containers?|envelopes?' +
+    '|pieces?|fillets?|stalks?|ears?|drops?';
+  // A unit follows a space or a hyphen ("12-ounce package pasta").
+  const re = new RegExp(`^(${num}(?:\\s*(?:-|–|to)\\s*${num})?(?:\\s*\\([^)]*\\))?(?:(?:\\s+|-)(?:${unit})(?=[\\s,]|$))?)\\s*(?:of\\s+)?(.*)$`, 'i');
+  const m = text.match(re);
+  if(!m || !m[2]) return { amount: '', item: text };
+  return { amount: m[1].trim(), item: m[2].trim() };
+}
+
+/** Instructions are stored as text, one step per line; numbering typed by hand ("1.", "Step 2:") is dropped for display. */
+function recipeSteps(text){
+  return String(text || '').split('\n')
+    .map(s=>s.replace(/^\s*(?:step\s*)?\d+\s*[.):-]\s*/i, '').trim())
+    .filter(Boolean);
+}
+
+/* The only way a recipe enters the board: every field is checked and trimmed,
+   ingredient rows without an ingredient are dropped, and optional fields are
+   left out entirely when empty. Older recipes (one ingredient string) are
+   split into rows here. */
+function normalizeRecipe(r){
+  const out = {
+    id: (typeof r.id === 'string' && r.id) ? r.id : uid(),
+    name: String(r.name || '').trim().slice(0, 120)
+  };
+  let rows;
+  if(Array.isArray(r.ingredients)){
+    rows = r.ingredients.map(x=>({ amount: String((x && x.amount) || '').trim().slice(0, 60), item: String((x && x.item) || '').trim().slice(0, 200) }));
+  }else{
+    const text = String(r.ingredients || '');
+    rows = (text.includes('\n') ? text.split('\n') : text.split(',')).map(splitIngredientLine);
+  }
+  out.ingredients = rows.filter(x=>x.item);
+  out.instructions = typeof r.instructions === 'string' ? r.instructions.trim() : '';
+  if(typeof r.memory === 'string' && r.memory.trim()) out.memory = r.memory.trim().slice(0, 1000);
+  if(typeof r.photo === 'string' && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(r.photo)) out.photo = r.photo;
+  const src = safeHttpUrl(r.source);
+  if(src) out.source = src.href;
+  return out;
+}
+
+/* Calls one of the family's Supabase Edge Functions and returns its `data`.
+   Uses the same two doors the board itself uses: a signed-in member sends
+   their session token; a family-code device sends the family code. Throws an
+   Error whose message is fit to show the family. */
+async function callFamilyFunction(fn, payload){
+  const { url, key } = cloudProject();
+  const headers = { apikey: key, 'Content-Type': 'application/json' };
+  const body = Object.assign({}, payload);
+  if(cloudSync.account.kind === 'member'){
+    headers.Authorization = 'Bearer ' + await auth.accessToken();
+  }else{
+    const cfg = cloudConfig();
+    if(!cfg) throw new Error('Turn on Family sync in Settings first — this runs through it.');
+    body.fid = cfg.familyId;
+  }
+  let res;
+  try{
+    // External call: the Supabase project's Edge Functions. Allowed by the
+    // page's CSP through connect-src https://*.supabase.co.
+    res = await fetch(`${url}/functions/v1/${fn}`, {
+      method: 'POST', headers, body: JSON.stringify(body),
+      signal: (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) ? AbortSignal.timeout(30000) : undefined
+    });
+  }catch(err){
+    if(err && err.name === 'TimeoutError') throw new Error('That took too long. Try again.');
+    throw new Error('No connection right now. Try again when you\'re back online.');
+  }
+  let data = null;
+  try{ data = await res.json(); }catch(e){ /* gateway errors aren't JSON; handled below */ }
+  if(res.status === 404 && !(data && data.error)){
+    throw new Error(`This isn't set up yet: the ${fn} function hasn't been deployed.`);
+  }
+  if(!res.ok || !data || !data.ok) throw new Error((data && data.error) || `That didn't work (error ${res.status}).`);
+  return data.data;
+}
+
+/* The one recipe form. It types a new recipe, adds one from a photo, checks
+   an imported one, and edits a saved one. Nothing touches the board until Save.
+     recipeModal()                         type a new recipe
+     recipeModal({ photoFirst: true })     add a recipe from a photo
+     recipeModal({ prefill, hint })        check an imported recipe
+     recipeModal({ recipe })               edit a saved recipe */
+function recipeModal(opts){
+  const o = opts || {};
+  const editing = o.recipe || null;
+  const base = editing || o.prefill || {};
+  const src = safeHttpUrl(base.source);
+  let rows = (base.ingredients || []).map(x=>({ amount: x.amount || '', item: x.item || '' }));
+  if(!rows.length) rows = [{ amount: '', item: '' }];
+  let photo = typeof base.photo === 'string' ? base.photo : '';
+  let lastFile = null;                // the full-size photo just picked; OCR reads it at higher resolution
+  const title = editing ? 'Edit recipe' : o.prefill ? 'Check this recipe' : o.photoFirst ? 'Add a recipe from a photo' : 'Add a recipe';
+  const hint = o.hint || (o.photoFirst ? 'Take a photo of the recipe or choose one from your library. Tap "Read the text" to fill in the recipe from the photo, then check it before saving. Or just name it and type the rest.' : '');
   openModal(`
-    <h3>Add recipe</h3>
-    <div class="field"><label>Recipe name</label><input id="rcName" placeholder="Spaghetti and meatballs"></div>
-    <div class="field"><label>Ingredients</label><textarea id="rcIng" rows="2" placeholder="Pasta, ground beef, tomato sauce…"></textarea></div>
-    <div class="field"><label>Instructions</label><textarea id="rcInst" rows="3" placeholder="Brown the beef, add sauce, simmer…"></textarea></div>
+    <h3>${title}</h3>
+    ${hint ? `<p class="ai-note">${escapeHtml(hint)}</p>` : ''}
+    <div class="field">
+      <label>Photo <span class="rc-opt">(optional)</span></label>
+      <div id="rcPhotoView"></div>
+      <div class="meal-tools" style="margin-top:0;">
+        <button class="btn btn-ghost" type="button" id="rcCamBtn">📷 Take a photo</button>
+        <button class="btn btn-ghost" type="button" id="rcLibBtn">🖼️ Choose from library</button>
+      </div>
+      <input type="file" id="rcCam" accept="image/*" capture="environment" hidden>
+      <input type="file" id="rcLib" accept="image/*" hidden>
+    </div>
+    <div class="field"><label for="rcName">Recipe name</label><input id="rcName" maxlength="120" value="${escapeHtml(base.name || '')}" placeholder="Grandma's chili"></div>
+    <div class="field"><label>Ingredients</label>
+      <div id="rcRows"></div>
+      <button class="btn btn-ghost" type="button" id="rcAddRow">+ Add ingredient</button>
+    </div>
+    <div class="field"><label for="rcInst">Instructions</label><textarea id="rcInst" rows="5" placeholder="One step per line">${escapeHtml(base.instructions || '')}</textarea></div>
+    <div class="field"><label for="rcMem">Recipe memory <span class="rc-opt">(optional)</span></label><textarea id="rcMem" rows="2" maxlength="1000" placeholder="Why you have this recipe: who made it, when you make it…">${escapeHtml(base.memory || '')}</textarea></div>
+    ${src ? `<p class="ai-note">From <a href="${escapeHtml(src.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(src.hostname.replace(/^www\./,''))} ↗</a></p>` : ''}
     <div class="modal-actions">
       <button class="btn btn-ghost" id="rcCancel">Cancel</button>
       <button class="btn btn-primary" id="rcSave">Save</button>
-    </div>
-  `);
+    </div>`);
+
+  // Photo: preview + remove. Data URLs only ever come from downscaleToDataUrl().
+  const drawPhoto = ()=>{
+    const view = document.getElementById('rcPhotoView');
+    if(!view) return;
+    view.innerHTML = photo
+      ? `<img class="rc-photo-preview" src="${escapeHtml(photo)}" alt="Recipe photo">
+         <div class="meal-tools" style="margin-top:0;">
+           <button class="btn btn-primary" type="button" id="rcOcrBtn">🔤 Read the text</button>
+           <button class="btn btn-ghost" type="button" id="rcPhotoDel">Remove photo</button>
+         </div>
+         <p class="ai-note" id="rcOcrStatus" aria-live="polite"></p>`
+      : '';
+    const del = document.getElementById('rcPhotoDel');
+    if(del) del.onclick = ()=>{ photo = ''; lastFile = null; drawPhoto(); };
+    const read = document.getElementById('rcOcrBtn');
+    if(read) read.onclick = readText;
+  };
+  /* "Take a photo" asks the phone for its camera (capture); "Choose from
+     library" opens the photo picker. Desktop browsers ignore capture and show
+     a file picker for both. The photo is shrunk on the device and re-saved as
+     JPEG, which also drops camera data such as GPS location. */
+  const pick = async input=>{
+    const file = input.files && input.files[0];
+    input.value = '';               // so picking the same photo again still fires
+    if(!file) return;
+    try{
+      photo = await downscaleToDataUrl(file, RECIPE_PHOTO_DIM, RECIPE_PHOTO_QUALITY);
+      lastFile = file;
+      drawPhoto();
+    }catch(err){ toast((err && err.message) || 'That photo couldn\'t be used.', 'error'); }
+  };
+  const cam = document.getElementById('rcCam'), lib = document.getElementById('rcLib');
+  document.getElementById('rcCamBtn').onclick = ()=>cam.click();
+  document.getElementById('rcLibBtn').onclick = ()=>lib.click();
+  cam.onchange = ()=>pick(cam);
+  lib.onchange = ()=>pick(lib);
+
+  // Ingredient rows: the inputs write straight into `rows`, so redrawing after
+  // an add or a remove never loses what was typed.
+  const rowsBox = document.getElementById('rcRows');
+  const drawRows = focusLast=>{
+    rowsBox.innerHTML = rows.map((x,i)=>`
+      <div class="rc-row">
+        <input class="rc-amt-in" data-rowamt="${i}" maxlength="60" value="${escapeHtml(x.amount)}" placeholder="Amount" aria-label="Amount for ingredient ${i+1}">
+        <input class="rc-item-in" data-rowitem="${i}" maxlength="200" value="${escapeHtml(x.item)}" placeholder="Ingredient" aria-label="Ingredient ${i+1}">
+        <button class="row-x" type="button" data-rowdel="${i}" title="Remove this ingredient" aria-label="Remove ingredient ${i+1}">✕</button>
+      </div>`).join('');
+    rowsBox.querySelectorAll('[data-rowamt]').forEach(el=>{ el.oninput = ()=>{ rows[+el.dataset.rowamt].amount = el.value; }; });
+    rowsBox.querySelectorAll('[data-rowitem]').forEach(el=>{ el.oninput = ()=>{ rows[+el.dataset.rowitem].item = el.value; }; });
+    rowsBox.querySelectorAll('[data-rowdel]').forEach(b=>{
+      b.onclick = ()=>{
+        rows.splice(+b.dataset.rowdel, 1);
+        if(!rows.length) rows.push({ amount: '', item: '' });
+        drawRows();
+      };
+    });
+    if(focusLast){ const last = rowsBox.querySelector(`[data-rowamt="${rows.length-1}"]`); if(last) last.focus(); }
+  };
+  document.getElementById('rcAddRow').onclick = ()=>{ rows.push({ amount: '', item: '' }); drawRows(true); };
+
+  /* "Read the text": OCR the photo on this device and fill the form. Empty
+     fields are filled; ingredients and steps already typed are kept, and what
+     the photo adds goes after them. Defined before drawPhoto() first runs,
+     because the button it draws calls this. */
+  const readText = async ()=>{
+    if(!photo){ toast('Add a photo first.', 'error'); return; }
+    if(ocrBusy) return;
+    ocrBusy = true;
+    const formName = document.getElementById('rcName');   // to tell if this form is still the one open
+    const say = msg=>{ const el = document.getElementById('rcOcrStatus'); if(el) el.textContent = msg; };
+    const btn = document.getElementById('rcOcrBtn');
+    if(btn) btn.disabled = true;
+    const started = Date.now();
+    try{
+      say('Getting the text reader ready… the first time downloads about 7 MB.');
+      const source = lastFile ? await downscaleToDataUrl(lastFile, OCR_MAX_DIM, 0.92) : photo;
+      const text = await ocrImage(source, (label, f)=>say(`${label}… ${Math.round(f * 100)}%`));
+      if(document.getElementById('rcName') !== formName) return;   // closed or replaced while reading
+      const found = parseRecipeText(text);
+      if(!found.name && !found.ingredients.length && !found.instructions){
+        say('No text was found. Try a clearer, closer photo with good light.');
+        return;
+      }
+      if(!formName.value.trim() && found.name) formName.value = found.name;
+      if(found.ingredients.length){
+        rows = rows.filter(x=>x.item.trim() || x.amount.trim()).concat(found.ingredients);
+        drawRows();
+      }
+      if(found.instructions){
+        const inst = document.getElementById('rcInst');
+        inst.value = inst.value.trim() ? `${inst.value.trim()}\n${found.instructions}` : found.instructions;
+      }
+      const nSteps = found.instructions ? found.instructions.split('\n').length : 0;
+      say(`Filled in ${found.ingredients.length} ingredient${found.ingredients.length === 1 ? '' : 's'} and ${nSteps} step${nSteps === 1 ? '' : 's'}. Check everything before saving: photo reading makes mistakes, especially with handwriting.`);
+    }catch(err){
+      const msg = (err && err.message) || 'The text reader couldn\'t read that photo.';
+      say('');
+      toast(msg, 'error');
+      try{ dailyLog.event('error', msg, { kind: 'recipe-ocr', ms: Date.now() - started }); }
+      catch(_){ /* logging must never be the thing that breaks the page */ }
+    }finally{
+      ocrBusy = false;
+      const b = document.getElementById('rcOcrBtn');
+      if(b) b.disabled = false;
+    }
+  };
+  drawPhoto();
+  drawRows();
+
   document.getElementById('rcCancel').onclick = closeModal;
   document.getElementById('rcSave').onclick = ()=>{
-    const name = document.getElementById('rcName').value.trim();
-    if(!name) return;
-    state.meals.recipes.push({id:uid(), name, ingredients:document.getElementById('rcIng').value.trim(), instructions:document.getElementById('rcInst').value.trim()});
+    const nameEl = document.getElementById('rcName');
+    const name = nameEl.value.trim();
+    if(!name){ toast('Give the recipe a name first.', 'error'); nameEl.focus(); return; }
+    const recipe = normalizeRecipe({
+      id: editing ? editing.id : uid(),
+      name,
+      ingredients: rows,
+      instructions: document.getElementById('rcInst').value,
+      memory: document.getElementById('rcMem').value,
+      photo,
+      source: src ? src.href : ''
+    });
+    // A new or changed photo has to fit on the board, which is one synced document.
+    if(recipe.photo && recipe.photo !== (editing && editing.photo)){
+      if(JSON.stringify(state).length + recipe.photo.length > RECIPE_BOARD_LIMIT){
+        toast('There\'s no room for another photo on the family board. Remove a photo from another recipe, or save this one without a photo.', 'error');
+        return;
+      }
+    }
+    const at = editing ? state.meals.recipes.findIndex(x=>x.id === editing.id) : -1;
+    if(at >= 0) state.meals.recipes[at] = recipe; else state.meals.recipes.push(recipe);
     saveState(); closeModal(); render();
+    toast(`Saved “${name}” to recipes 📖`, 'success');
   };
+}
+
+/* "From a website": paste a recipe page's address, the recipe-import function
+   copies the page's own recipe data, and the recipe form opens filled in. */
+function recipeWebModal(){
+  openModal(`
+    <h3>Add a recipe from a website</h3>
+    <p class="ai-note">Copy the address of a recipe page, paste it here, and check the recipe before saving.</p>
+    <div class="field"><label for="riUrl">Recipe page address</label><input id="riUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://…"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="riCancel">Cancel</button>
+      <button class="btn btn-primary" id="riGo">Import</button>
+    </div>`);
+  const input = document.getElementById('riUrl');
+  const go = document.getElementById('riGo');
+  document.getElementById('riCancel').onclick = closeModal;
+  const run = async ()=>{
+    const link = safeHttpUrl(input.value.trim());
+    if(!link){ toast('Paste the full address, starting with https://', 'error'); input.focus(); return; }
+    if(recipeImportBusy) return;
+    recipeImportBusy = true;
+    go.disabled = true; go.textContent = 'Importing…';
+    const started = Date.now();
+    try{
+      const out = await callFamilyFunction(RECIPE_IMPORT_FN, { url: link.href });
+      recipeModal({
+        prefill: {
+          name: out.recipe.name,
+          ingredients: (out.recipe.ingredients || []).map(splitIngredientLine),
+          instructions: (out.recipe.instructions || []).join('\n'),
+          source: out.source
+        },
+        hint: 'Copied from the page\'s own recipe card. Check the amounts before saving.'
+      });
+    }catch(err){
+      const msg = (err && err.message) || 'That recipe couldn\'t be imported.';
+      toast(msg, 'error');
+      try{ dailyLog.event('error', msg, { kind: 'recipe-import', host: link.hostname, ms: Date.now() - started }); }
+      catch(_){ /* logging must never be the thing that breaks the page */ }
+      if(document.body.contains(go)){ go.disabled = false; go.textContent = 'Import'; }
+    }finally{
+      recipeImportBusy = false;
+    }
+  };
+  go.onclick = run;
+  input.onkeydown = e=>{ if(e.key === 'Enter') run(); };
+  input.focus();
 }
 function mealSlotModal(key){
   const [date, slot] = key.split('|');
@@ -9390,8 +9887,15 @@ function attachHandlers(){
   // Meals
   document.querySelectorAll('[data-mealtab]').forEach(b=>b.onclick = ()=>{ mealSubTab=b.dataset.mealtab; render(); });
   document.querySelectorAll('[data-mealslot]').forEach(el=>el.onclick = ()=>mealSlotModal(el.dataset.mealslot));
-  const addRecipeBtn = document.getElementById('addRecipeBtn');
-  if(addRecipeBtn) addRecipeBtn.onclick = recipeModal;
+  // Recipes: three ways in (see RECIPES), plus Edit and Remove on each card.
+  document.querySelectorAll('[data-recipeadd]').forEach(b=>b.onclick = ()=>{
+    if(b.dataset.recipeadd === 'web') recipeWebModal();
+    else recipeModal({ photoFirst: b.dataset.recipeadd === 'photo' });
+  });
+  document.querySelectorAll('[data-editrecipe]').forEach(b=>b.onclick = ()=>{
+    const r = state.meals.recipes.find(x=>x.id === b.dataset.editrecipe);
+    if(r) recipeModal({ recipe: r });
+  });
   document.querySelectorAll('[data-delrecipe]').forEach(b=>b.onclick = ()=>{
     state.meals.recipes = state.meals.recipes.filter(r=>r.id!==b.dataset.delrecipe);
     saveState(); render();
