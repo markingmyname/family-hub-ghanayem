@@ -3,7 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://accounts.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://graph.microsoft.com https://login.microsoftonline.com https://login.live.com https://cdn.jsdelivr.net https://accounts.google.com https://www.googleapis.com https://oauth2.googleapis.com https://*.supabase.co https://api.open-meteo.com https://geocoding-api.open-meteo.com; frame-src https://login.microsoftonline.com https://login.live.com https://accounts.google.com; base-uri 'self'; form-action 'self'">
+<!-- CSP notes: 'wasm-unsafe-eval' lets the recipe text reader (Tesseract OCR,
+     loaded on demand from cdn.jsdelivr.net) compile its WebAssembly engine; it
+     does not allow eval() of JavaScript. worker-src lets that reader run in a
+     background worker it starts from a blob: URL, and keeps 'self' for sw.js. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net https://accounts.google.com; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://graph.microsoft.com https://login.microsoftonline.com https://login.live.com https://cdn.jsdelivr.net https://accounts.google.com https://www.googleapis.com https://oauth2.googleapis.com https://*.supabase.co https://api.open-meteo.com https://geocoding-api.open-meteo.com; frame-src https://login.microsoftonline.com https://login.live.com https://accounts.google.com; base-uri 'self'; form-action 'self'">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <title>Family Hub</title>
 <meta name="theme-color" content="#2E3A46">
@@ -6382,6 +6386,98 @@ const RECIPE_PHOTO_QUALITY = 0.6;     // JPEG quality; roughly 60-120 KB per pho
 const RECIPE_BOARD_LIMIT = 4_000_000; // characters; saveState() already warns at 4.5M
 let recipeImportBusy = false;         // one import at a time
 
+/* ---- Reading a recipe photo (OCR) ----
+   Tesseract.js runs on the device: the photo never leaves it, and there's no
+   key and no cost. It's good with printed text (cookbooks, screenshots) and
+   weak with handwriting, so the form always shows the result for checking.
+   External dependency: cdn.jsdelivr.net, downloaded only the first time someone
+   taps "Read the text" (~7 MB: the library, its worker, its WebAssembly engine,
+   and the English data); browsers keep it after that. If the CDN can't be
+   reached, reading fails with a message and nothing else is affected.
+   The library file is pinned by version AND by SHA-384 hash, so a changed file
+   on the CDN is refused instead of run. The worker and engine are pinned by
+   version through the library; the English data is pinned here. */
+const OCR_LIB_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/tesseract.min.js';
+const OCR_LIB_SRI = 'sha384-2BQ3U3OdKOb0Uczxqr41I9UvZkzr4V9Hv8uSzMMZAlmhsFClvdZX5wi5fDCzG+tM';
+const OCR_LANG_PATH = 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng@1.0.0/4.0.0_best_int';
+const OCR_MAX_DIM = 2000;             // OCR reads small print better from a larger image than the saved one
+let ocrLibPromise = null;
+let ocrBusy = false;                  // one reading at a time: each holds ~100 MB while it runs
+
+/** Loads the OCR library once, on first use. A failed load can be retried. */
+function loadOcrLib(){
+  if(window.Tesseract) return Promise.resolve(window.Tesseract);
+  if(!ocrLibPromise){
+    ocrLibPromise = new Promise((resolve, reject)=>{
+      const s = document.createElement('script');
+      s.src = OCR_LIB_URL;
+      s.integrity = OCR_LIB_SRI;
+      s.crossOrigin = 'anonymous';
+      s.onload = ()=> window.Tesseract ? resolve(window.Tesseract) : reject(new Error('The text reader didn\'t start.'));
+      s.onerror = ()=>{ ocrLibPromise = null; s.remove(); reject(new Error('The text reader couldn\'t download. Check your connection and try again.')); };
+      document.head.appendChild(s);
+    });
+  }
+  return ocrLibPromise;
+}
+
+/* Reads the text in one image. onProgress(label, fraction) reports each stage.
+   The worker is always shut down afterwards, which frees its memory. */
+async function ocrImage(source, onProgress){
+  const T = await loadOcrLib();
+  const labels = {
+    'loading tesseract core': 'Getting the text reader ready',
+    'loading language traineddata': 'Getting the text reader ready',
+    'recognizing text': 'Reading the photo'
+  };
+  let worker = null;
+  try{
+    worker = await T.createWorker('eng', 1, {   // 1 = the LSTM (neural) engine only
+      langPath: OCR_LANG_PATH,
+      logger: m=>{ if(m && typeof m.progress === 'number' && labels[m.status]) onProgress(labels[m.status], m.progress); }
+    });
+    const { data } = await worker.recognize(source);
+    return (data && data.text) || '';
+  }catch(err){
+    // The worker reports failures as plain strings or objects; give the family one sentence.
+    throw new Error(err instanceof Error && /download|connection/i.test(err.message) ? err.message : 'The text reader couldn\'t read that photo. Try a clearer, closer one.');
+  }finally{
+    if(worker){ try{ await worker.terminate(); }catch(_){ /* already stopped */ } }
+  }
+}
+
+/* Sorts OCR text into the recipe format. With "Ingredients" / "Directions"
+   (or "Instructions", "Method", "Steps", "Preparation") headings, lines go
+   where the headings say. Without them, lines that start with an amount are
+   ingredients and the rest are steps. The first plain line before any heading
+   is taken as the name. Lines the camera wrapped mid-sentence are joined back
+   into one step. A best guess that the family checks in the form. */
+function parseRecipeText(text){
+  const lines = String(text || '').split(/\r?\n/)
+    .map(l=>l.replace(/^[\s•·▪●○◦*>-]+/, '').replace(/\s+/g, ' ').trim())
+    .filter(l=>l.length > 1);
+  const ingHead = /^ingredients?\b[:\s]*$/i;
+  const stepHead = /^(instructions?|directions?|method|steps|preparation)\b[:\s]*$/i;
+  const looksLikeIngredient = l=>l.length <= 90 && splitIngredientLine(l).amount !== '';
+  let name = '', section = 'auto';
+  const ingredients = [], steps = [];
+  for(const line of lines){
+    if(ingHead.test(line)){ section = 'ing'; continue; }
+    if(stepHead.test(line)){ section = 'steps'; continue; }
+    if(!name && section === 'auto' && !looksLikeIngredient(line)){ name = line.slice(0, 120); continue; }
+    const target = section === 'ing' ? 'ing'
+                 : section === 'steps' ? 'steps'
+                 : (looksLikeIngredient(line) ? 'ing' : 'steps');
+    if(target === 'ing'){ ingredients.push(line); continue; }
+    // A line that starts lowercase after a step that didn't end a sentence is
+    // the same step, wrapped onto a new line by the page.
+    const prev = steps[steps.length - 1];
+    if(prev && !/[.!?:]$/.test(prev) && /^[a-z(]/.test(line)) steps[steps.length - 1] = prev + ' ' + line;
+    else steps.push(line);
+  }
+  return { name, ingredients: ingredients.map(splitIngredientLine), instructions: steps.join('\n') };
+}
+
 /** An http(s) URL object, or null for anything else (javascript:, data:, junk). */
 function safeHttpUrl(raw){
   if(typeof raw !== 'string' || !raw) return null;
@@ -6498,8 +6594,9 @@ function recipeModal(opts){
   let rows = (base.ingredients || []).map(x=>({ amount: x.amount || '', item: x.item || '' }));
   if(!rows.length) rows = [{ amount: '', item: '' }];
   let photo = typeof base.photo === 'string' ? base.photo : '';
+  let lastFile = null;                // the full-size photo just picked; OCR reads it at higher resolution
   const title = editing ? 'Edit recipe' : o.prefill ? 'Check this recipe' : o.photoFirst ? 'Add a recipe from a photo' : 'Add a recipe';
-  const hint = o.hint || (o.photoFirst ? 'Take a photo of the recipe or choose one from your library, then give it a name. Ingredients and instructions can be typed now or later.' : '');
+  const hint = o.hint || (o.photoFirst ? 'Take a photo of the recipe or choose one from your library. Tap "Read the text" to fill in the recipe from the photo, then check it before saving. Or just name it and type the rest.' : '');
   openModal(`
     <h3>${title}</h3>
     ${hint ? `<p class="ai-note">${escapeHtml(hint)}</p>` : ''}
@@ -6531,10 +6628,17 @@ function recipeModal(opts){
     const view = document.getElementById('rcPhotoView');
     if(!view) return;
     view.innerHTML = photo
-      ? `<img class="rc-photo-preview" src="${escapeHtml(photo)}" alt="Recipe photo"><button class="btn btn-ghost" type="button" id="rcPhotoDel">Remove photo</button>`
+      ? `<img class="rc-photo-preview" src="${escapeHtml(photo)}" alt="Recipe photo">
+         <div class="meal-tools" style="margin-top:0;">
+           <button class="btn btn-primary" type="button" id="rcOcrBtn">🔤 Read the text</button>
+           <button class="btn btn-ghost" type="button" id="rcPhotoDel">Remove photo</button>
+         </div>
+         <p class="ai-note" id="rcOcrStatus" aria-live="polite"></p>`
       : '';
     const del = document.getElementById('rcPhotoDel');
-    if(del) del.onclick = ()=>{ photo = ''; drawPhoto(); };
+    if(del) del.onclick = ()=>{ photo = ''; lastFile = null; drawPhoto(); };
+    const read = document.getElementById('rcOcrBtn');
+    if(read) read.onclick = readText;
   };
   /* "Take a photo" asks the phone for its camera (capture); "Choose from
      library" opens the photo picker. Desktop browsers ignore capture and show
@@ -6546,6 +6650,7 @@ function recipeModal(opts){
     if(!file) return;
     try{
       photo = await downscaleToDataUrl(file, RECIPE_PHOTO_DIM, RECIPE_PHOTO_QUALITY);
+      lastFile = file;
       drawPhoto();
     }catch(err){ toast((err && err.message) || 'That photo couldn\'t be used.', 'error'); }
   };
@@ -6577,6 +6682,53 @@ function recipeModal(opts){
     if(focusLast){ const last = rowsBox.querySelector(`[data-rowamt="${rows.length-1}"]`); if(last) last.focus(); }
   };
   document.getElementById('rcAddRow').onclick = ()=>{ rows.push({ amount: '', item: '' }); drawRows(true); };
+
+  /* "Read the text": OCR the photo on this device and fill the form. Empty
+     fields are filled; ingredients and steps already typed are kept, and what
+     the photo adds goes after them. Defined before drawPhoto() first runs,
+     because the button it draws calls this. */
+  const readText = async ()=>{
+    if(!photo){ toast('Add a photo first.', 'error'); return; }
+    if(ocrBusy) return;
+    ocrBusy = true;
+    const formName = document.getElementById('rcName');   // to tell if this form is still the one open
+    const say = msg=>{ const el = document.getElementById('rcOcrStatus'); if(el) el.textContent = msg; };
+    const btn = document.getElementById('rcOcrBtn');
+    if(btn) btn.disabled = true;
+    const started = Date.now();
+    try{
+      say('Getting the text reader ready… the first time downloads about 7 MB.');
+      const source = lastFile ? await downscaleToDataUrl(lastFile, OCR_MAX_DIM, 0.92) : photo;
+      const text = await ocrImage(source, (label, f)=>say(`${label}… ${Math.round(f * 100)}%`));
+      if(document.getElementById('rcName') !== formName) return;   // closed or replaced while reading
+      const found = parseRecipeText(text);
+      if(!found.name && !found.ingredients.length && !found.instructions){
+        say('No text was found. Try a clearer, closer photo with good light.');
+        return;
+      }
+      if(!formName.value.trim() && found.name) formName.value = found.name;
+      if(found.ingredients.length){
+        rows = rows.filter(x=>x.item.trim() || x.amount.trim()).concat(found.ingredients);
+        drawRows();
+      }
+      if(found.instructions){
+        const inst = document.getElementById('rcInst');
+        inst.value = inst.value.trim() ? `${inst.value.trim()}\n${found.instructions}` : found.instructions;
+      }
+      const nSteps = found.instructions ? found.instructions.split('\n').length : 0;
+      say(`Filled in ${found.ingredients.length} ingredient${found.ingredients.length === 1 ? '' : 's'} and ${nSteps} step${nSteps === 1 ? '' : 's'}. Check everything before saving: photo reading makes mistakes, especially with handwriting.`);
+    }catch(err){
+      const msg = (err && err.message) || 'The text reader couldn\'t read that photo.';
+      say('');
+      toast(msg, 'error');
+      try{ dailyLog.event('error', msg, { kind: 'recipe-ocr', ms: Date.now() - started }); }
+      catch(_){ /* logging must never be the thing that breaks the page */ }
+    }finally{
+      ocrBusy = false;
+      const b = document.getElementById('rcOcrBtn');
+      if(b) b.disabled = false;
+    }
+  };
   drawPhoto();
   drawRows();
 
