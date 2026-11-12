@@ -523,6 +523,7 @@
   .meal-slot-label{font-size:11px; font-weight:700; color:var(--ink-soft); display:flex; align-items:center;}
   .meal-cell{background:#fff; border:1px solid var(--line); border-radius:8px; padding:6px; min-height:44px; font-size:12px; cursor:pointer;}
   .meal-cell:empty::before{content:'+'; color:#ccc;}
+  .mp-week{font-size:12px; font-weight:700; color:var(--ink-soft); margin-bottom:8px;}
   .recipe-card{border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:8px; background:#fff;}
   .recipe-card h4{margin:0 0 6px 0; font-size:15px;}
   .recipe-card .ing{font-size:12px; color:var(--ink-soft); margin-bottom:6px;}
@@ -6061,9 +6062,26 @@ function renderMeals(){
       ${body}
     </div>`;
 }
+/* The plan always shows THIS week, Sunday to Saturday — the same week shape the
+   Calendar tab's week view uses, and Google Calendar's default. It used to
+   follow state.calDate, so browsing the Calendar to another month dragged the
+   meal plan along with it. mealPlanWeekShown lets the once-a-minute check
+   below redraw a screen that's left open across Saturday midnight. */
+let mealPlanWeekShown = '';
+function currentMealWeek(){
+  const start = startOfWeek(new Date());
+  return [...Array(7)].map((_,i)=>{ const d=new Date(start); d.setDate(start.getDate()+i); return d; });
+}
+setInterval(()=>{
+  // One date comparison a minute; redraws only on the Plan tab, only when the week changed.
+  if(activeTab !== 'meals' || mealSubTab !== 'plan' || !mealPlanWeekShown) return;
+  if(fmtDate(currentMealWeek()[0]) !== mealPlanWeekShown) render();
+}, 60000);
 function renderMealPlan(){
-  const start = startOfWeek(parseDate(state.calDate));
-  const days = [...Array(7)].map((_,i)=>{ const d=new Date(start); d.setDate(start.getDate()+i); return d; });
+  const days = currentMealWeek();
+  mealPlanWeekShown = fmtDate(days[0]);
+  const shortDate = d=>d.toLocaleDateString(undefined, {month:'short', day:'numeric'});
+  const weekLabel = `<div class="mp-week">This week · ${shortDate(days[0])} – ${shortDate(days[6])}</div>`;
   let rows = MEAL_SLOTS.map(slot=>{
     const cells = days.map(d=>{
       const key = fmtDate(d)+'|'+slot;
@@ -6073,7 +6091,7 @@ function renderMealPlan(){
     return `<div class="meal-slot-label">${slot}</div>${cells}`;
   }).join('');
   const head = `<div></div>` + days.map(d=>`<div class="mp-head">${DOW[d.getDay()]} ${d.getDate()}</div>`).join('');
-  return `<div class="meal-plan-grid">${head}${rows}</div>`;
+  return `${weekLabel}<div class="meal-plan-grid">${head}${rows}</div>`;
 }
 function renderRecipes(){
   const cards = state.meals.recipes.map(r=>`
@@ -6262,17 +6280,16 @@ function groceryModal(id){
 }
 
 /* Pulls every ingredient line off the saved recipes that this week's plan
-   actually names, so the shop matches the menu. */
+   actually names, so the shop matches the menu. "This week" is the same
+   current week the Plan tab shows. */
 function groceryFromMealPlan(){
-  const start = startOfWeek(parseDate(state.calDate));
   const wanted = new Set();
-  for(let i=0; i<7; i++){
-    const d = new Date(start); d.setDate(start.getDate()+i);
+  currentMealWeek().forEach(d=>{
     MEAL_SLOTS.forEach(slot=>{
       const meal = state.meals.plan[fmtDate(d)+'|'+slot];
       if(meal) wanted.add(meal.trim().toLowerCase());
     });
-  }
+  });
   if(!wanted.size){ toast('Nothing is planned for this week yet.', 'error'); return; }
   const existing = new Set(state.meals.grocery.filter(g=>!g.done).map(g=>g.name.toLowerCase()));
   let added = 0;
