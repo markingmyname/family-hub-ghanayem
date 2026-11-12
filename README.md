@@ -26,7 +26,8 @@ Either way you get a home-screen icon that opens with no address bar and no brow
 | Path | What it is |
 | --- | --- |
 | [family-hub-app](family-hub-app) | The app itself — `index.html`, `manifest.json`, `sw.js`, icons. This is what gets published. |
-| [.github/workflows/pages.yml](.github/workflows/pages.yml) | Publishes `family-hub-app/` to GitHub Pages on every push to `main`. |
+| [.github/workflows/pages.yml](.github/workflows/pages.yml) | Publishes `family-hub-app/` to the `gh-pages` branch, which GitHub Pages serves, on every push to `main`. |
+| [.github/workflows/preview.yml](.github/workflows/preview.yml) | Publishes a preview of each pull request that changes the app, and removes it when the pull request closes. |
 
 ## Publishing changes
 
@@ -34,11 +35,23 @@ Edit files in `family-hub-app/`, commit, and push to `main`. The workflow redepl
 
 To republish without changing anything: **Actions** tab → **Deploy Family Hub to GitHub Pages** → **Run workflow**.
 
+### Previewing a pull request before you merge
+
+Open a pull request that changes anything in `family-hub-app/`. Within a couple of minutes a **Preview** link appears at the top of the pull request's description, and a comment appears with the same link and a QR code — scan the code to open the preview on a phone. Every new push to the pull request updates the preview, and closing or merging the pull request removes it, along with the description link.
+
+Preview links look like `https://markingmyname.github.io/family-hub-ghanayem/pr-preview/pr-12/`.
+
+> **A preview shares the live app's saved data.** It runs at the same web address as the live app, so on a device that's joined to Family sync, a preview reads and writes the real family board. Use a preview to look, or open it in a private window or a browser that isn't joined.
+
+Pull requests from forks don't get previews.
+
 ### Enabling GitHub Pages (one time)
 
-**Settings → Pages → Build and deployment** → Source → **GitHub Actions**.
+**Settings → Pages → Build and deployment** → Source → **Deploy from a branch** → Branch **`gh-pages`**, folder **`/ (root)`** → **Save**.
 
-Pick **GitHub Actions**, not "Deploy from a branch" — the branch option only serves the repo root or `/docs`, and the app lives in neither.
+The `gh-pages` branch is created and filled by the deploy workflow, so it has to run once first. If the branch isn't in the list yet, run **Deploy Family Hub to GitHub Pages** from the **Actions** tab, then come back.
+
+Don't pick "GitHub Actions" as the source. Pull request previews are published as folders on the `gh-pages` branch, and the "GitHub Actions" source can't serve them.
 
 > **Seeing an old version after a deploy?** The browser caches the app. Hard-refresh (<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd>), or close and reopen the installed app.
 

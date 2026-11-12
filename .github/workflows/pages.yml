@@ -1,7 +1,15 @@
 name: Deploy Family Hub to GitHub Pages
 
 # Publishes family-hub-app/ straight from source — no duplicate copy of
-# index.html to keep in sync. Requires Settings → Pages → Source: "GitHub Actions".
+# index.html to keep in sync — onto the gh-pages branch, which GitHub Pages
+# serves. Requires Settings → Pages → Source: "Deploy from a branch" →
+# gh-pages / (root).
+#
+# Pull request previews (preview.yml) live in gh-pages/pr-preview/. This deploy
+# leaves that folder alone, so publishing the live site never deletes a preview.
+#
+# Depends on: JamesIves/github-pages-deploy-action, pinned to the commit behind
+# release v4.9.0 so a re-pointed tag can't change what runs with write access.
 
 on:
   push:
@@ -11,10 +19,10 @@ on:
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
+# Only what the deploy needs: push to the gh-pages branch. Set here rather than
+# by loosening the repository-wide Actions setting.
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 # Let a running deploy finish rather than cancelling it mid-publish.
 concurrency:
@@ -24,21 +32,21 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@v7
 
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v6
+      # Branch-based Pages runs every site through Jekyll unless this file is at
+      # the root. The app is plain files, so skip Jekyll and serve them as-is.
+      - name: Serve the files exactly as they are (no Jekyll)
+        run: touch family-hub-app/.nojekyll
 
-      - name: Upload the app folder as the site
-        uses: actions/upload-pages-artifact@v5
+      # force: false rebases instead of force-pushing, so a preview pushed to
+      # gh-pages at the same moment isn't overwritten.
+      - name: Publish the app folder to gh-pages
+        uses: JamesIves/github-pages-deploy-action@fa24774553152dd7873cd16ebd8d959b010c5445 # v4.9.0
         with:
-          path: family-hub-app
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v5
+          folder: family-hub-app
+          branch: gh-pages
+          clean-exclude: pr-preview/
+          force: false
